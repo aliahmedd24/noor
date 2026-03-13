@@ -12,9 +12,12 @@ summarizer_agent = LlmAgent(
     name="PageSummarizerAgent",
     model="gemini-2.5-flash",
     description=(
-        "Extracts and summarizes page content for the user. Reads articles, "
-        "describes search results, summarizes long pages, and presents content "
-        "in a clear, spoken format suitable for audio delivery."
+        "Specialist agent for reading and summarizing web page content. Extracts "
+        "the main text, article body, search results, or product details from "
+        "the current page and presents them in a clear, concise format suitable "
+        "for reading aloud. Use this agent when the user wants to KNOW what a "
+        "page says — reading articles, reviewing search results, or understanding "
+        "form content."
     ),
     instruction=_INSTRUCTIONS,
     output_key="page_summary",

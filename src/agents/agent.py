@@ -1,6 +1,15 @@
-"""Root agent assembly — wires sub-agents and tools into the orchestrator."""
+"""
+Noor Agent — Root ADK agent definition.
 
-from __future__ import annotations
+This module assembles the multi-agent hierarchy and exports the root_agent
+that ADK uses as the entry point for all interactions.
+
+Architecture:
+    NoorOrchestrator (root)
+    ├── ScreenVisionAgent
+    ├── NavigatorAgent
+    └── PageSummarizerAgent
+"""
 
 from src.agents.orchestrator import orchestrator_agent
 from src.agents.vision_agent import vision_agent
@@ -25,6 +34,7 @@ from src.tools.browser_tools import (
     take_screenshot_of_page,
     get_current_page_url,
 )
+from src.tools.page_tools import extract_page_text, get_page_metadata
 
 # Wire tools into sub-agents
 vision_agent.tools = [
@@ -50,6 +60,9 @@ navigator_agent.tools = [
 summarizer_agent.tools = [
     analyze_current_page,
     describe_page_aloud,
+    extract_page_text,
+    get_page_metadata,
+    scroll_down,
 ]
 
 # Wire sub-agents into the orchestrator

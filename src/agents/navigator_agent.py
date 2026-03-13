@@ -12,9 +12,10 @@ navigator_agent = LlmAgent(
     name="NavigatorAgent",
     model="gemini-2.5-flash",
     description=(
-        "Plans and executes browser actions such as clicking elements, typing text, "
-        "scrolling, and navigating to URLs. Uses the latest vision analysis from "
-        "ScreenVisionAgent to decide where and how to act."
+        "Specialist agent for browser control and web navigation. Executes actions "
+        "like clicking buttons, typing text, scrolling, navigating to URLs, and "
+        "going back/forward. Use this agent when you need to INTERACT with the "
+        "web page — clicking, typing, scrolling, or navigating to a new URL."
     ),
     instruction=_INSTRUCTIONS,
     output_key="navigation_result",

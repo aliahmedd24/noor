@@ -12,9 +12,11 @@ vision_agent = LlmAgent(
     name="ScreenVisionAgent",
     model="gemini-2.5-flash",
     description=(
-        "Analyzes screenshots of the current browser page. Identifies interactive "
-        "elements, reads text content, describes images, and reports the visual "
-        "layout to help the user understand what is on screen."
+        "Specialist agent for visual analysis of web pages. Captures screenshots "
+        "and uses AI vision to understand page layout, identify interactive elements "
+        "(buttons, links, forms, menus), describe images, and read text content. "
+        "Use this agent when you need to SEE what is currently on the screen or "
+        "find a specific element to interact with."
     ),
     instruction=_INSTRUCTIONS,
     output_key="vision_analysis",

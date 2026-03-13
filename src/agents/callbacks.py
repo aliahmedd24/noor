@@ -32,7 +32,7 @@ async def ensure_tools_initialized(callback_context) -> None:
     from src.config import settings
     from src.browser.manager import BrowserManager
     from src.vision.analyzer import ScreenAnalyzer
-    from src.tools import browser_tools, vision_tools
+    from src.tools import browser_tools, vision_tools, page_tools
 
     # Start browser
     headless = settings.noor_browser_headless
@@ -53,6 +53,7 @@ async def ensure_tools_initialized(callback_context) -> None:
     browser_tools.set_browser_manager(browser)
     vision_tools.set_browser_manager(browser)
     vision_tools.set_screen_analyzer(analyzer)
+    page_tools.set_browser_manager(browser)
 
     _initialized = True
     logger.info(
