@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  noor:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - NOOR_BROWSER_HEADLESS=true
+      # Docker uses bundled Chromium — do NOT set NOOR_BROWSER_CHANNEL
+    volumes:
+      - ./client:/app/client

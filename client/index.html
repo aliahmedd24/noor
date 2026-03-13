@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Noor — Your Eyes on the Web</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <main id="app" role="main" aria-label="Noor web navigator">
+        <h1>Noor</h1>
+        <p id="status" role="status" aria-live="polite">Press the button to start speaking.</p>
+
+        <button id="mic-btn" aria-label="Start voice conversation">
+            Talk to Noor
+        </button>
+
+        <div id="transcript" role="log" aria-live="polite" aria-label="Conversation transcript">
+        </div>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>

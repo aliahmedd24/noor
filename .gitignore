@@ -1,0 +1,95 @@
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+*.pyz
+*.pyzw
+.venv/
+venv/
+env/
+.Python
+
+# ── IDE / Editor ────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# ── Claude / AI tooling ────────────────────────────────
+.claude/
+
+# ── Secrets & Environment ──────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials.json
+service-account*.json
+*-credentials.json
+*secret*.*
+!*secret*.py
+!*secret*.txt
+
+# ── Google Cloud ────────────────────────────────────────
+gcloud-service-key.json
+application_default_credentials.json
+
+# ── Terraform ──────────────────────────────────────────
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+.terraform.lock.hcl
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+crash.log
+
+# ── Testing ─────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# ── Linting / Formatting ───────────────────────────────
+.ruff_cache/
+.mypy_cache/
+
+# ── Node (client assets) ───────────────────────────────
+node_modules/
+package-lock.json
+
+# ── Docker ──────────────────────────────────────────────
+.dockerignore
+
+# ── OS files ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# ── Logs & temp ─────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+*.pid
