@@ -386,6 +386,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 parts=[types.Part(text=msg["content"])]
                             )
                             live_request_queue.send_content(content)
+                        elif msg.get("type") == "activity_start":
+                            live_request_queue.send_activity_start()
+                        elif msg.get("type") == "activity_end":
+                            live_request_queue.send_activity_end()
                         elif msg.get("type") in ("settings", "ping"):
                             pass  # Ignore control messages
                     else:

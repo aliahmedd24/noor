@@ -217,6 +217,11 @@ async function startMicrophone() {
   // Barge-in: stop any playing audio when the user starts speaking
   stopPlayback();
 
+  // Signal the Live API that the user is speaking — interrupts model output
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "activity_start" }));
+  }
+
   try {
     audioContext = new AudioContext({ sampleRate: 16000 });
     mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -270,6 +275,11 @@ async function startMicrophone() {
 }
 
 function stopMicrophone() {
+  // Signal the Live API that the user stopped speaking
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "activity_end" }));
+  }
+
   if (scriptProcessor) {
     scriptProcessor.disconnect();
     scriptProcessor = null;
