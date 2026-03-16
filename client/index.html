@@ -1,24 +1,91 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Noor — AI-powered web navigator for visually impaired users. Voice-first browsing powered by Gemini.">
     <title>Noor — Your Eyes on the Web</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <main id="app" role="main" aria-label="Noor web navigator">
-        <h1>Noor</h1>
-        <p id="status" role="status" aria-live="polite">Press the button to start speaking.</p>
+    <!-- Skip navigation -->
+    <a href="#main-content" class="skip-nav">Skip to main content</a>
 
-        <button id="mic-btn" aria-label="Start voice conversation">
-            Talk to Noor
-        </button>
+    <!-- Header -->
+    <header class="header" role="banner">
+        <div class="header__brand">
+            <h1 class="header__logo">
+                <span class="header__logo-ar" aria-hidden="true">&#1606;&#1608;&#1585;</span>
+                <span class="header__logo-en">Noor</span>
+            </h1>
+            <p class="header__tagline">Your Eyes on the Web</p>
+        </div>
+        <nav class="header__nav" aria-label="Settings">
+            <button id="settings-btn" class="icon-btn" aria-label="Open settings" title="Settings">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <path d="M10 13a3 3 0 100-6 3 3 0 000 6z" stroke="currentColor" stroke-width="1.5"/>
+                    <path d="M16.5 10a6.5 6.5 0 01-.4 2.2l1.7 1.3-1.5 2.6-2-.6a6.5 6.5 0 01-3.8 1.5v2h-3v-2a6.5 6.5 0 01-3.8-1.5l-2 .6-1.5-2.6 1.7-1.3A6.5 6.5 0 011.5 10c0-.8.1-1.5.4-2.2L.2 6.5l1.5-2.6 2 .6A6.5 6.5 0 017.5 3V1h3v2a6.5 6.5 0 013.8 1.5l2-.6 1.5 2.6-1.7 1.3c.3.7.4 1.4.4 2.2z" stroke="currentColor" stroke-width="1.5"/>
+                </svg>
+            </button>
+        </nav>
+    </header>
 
-        <div id="transcript" role="log" aria-live="polite" aria-label="Conversation transcript">
+    <!-- Main content -->
+    <main id="main-content" class="main" role="main">
+        <!-- Status bar -->
+        <div id="status" class="status-bar" role="status" aria-live="polite">
+            <span class="status-bar__dot"></span>
+            <span class="status-bar__text">Connecting...</span>
+        </div>
+
+        <!-- Two-column layout: conversation + screenshot -->
+        <div class="layout">
+            <!-- Left: Conversation -->
+            <section class="conversation" aria-label="Conversation">
+                <!-- Mic + waveform -->
+                <div class="mic-area">
+                    <button id="mic-btn" class="mic-btn" aria-label="Start voice conversation" aria-pressed="false">
+                        <svg class="mic-btn__icon" width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path d="M12 1a4 4 0 00-4 4v6a4 4 0 008 0V5a4 4 0 00-4-4z" stroke="currentColor" stroke-width="2"/>
+                            <path d="M19 10v1a7 7 0 01-14 0v-1M12 18v4M8 22h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        <span class="mic-btn__label">Talk to Noor</span>
+                    </button>
+                    <canvas id="waveform" class="waveform" aria-hidden="true"></canvas>
+                </div>
+
+                <!-- Text input -->
+                <form id="text-form" class="text-form" role="search" aria-label="Text input">
+                    <label for="text-input" class="sr-only">Type a command for Noor</label>
+                    <input
+                        id="text-input"
+                        type="text"
+                        class="text-form__input"
+                        placeholder="Or type here... (e.g., 'Go to google.com')"
+                        autocomplete="off"
+                        aria-label="Type a command for Noor"
+                    >
+                    <button type="submit" class="text-form__submit" aria-label="Send message">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
+                </form>
+
+                <!-- Transcript -->
+                <div id="transcript" aria-label="Conversation transcript"></div>
+            </section>
+
+            <!-- Right: Screenshot panel -->
+            <aside id="screenshot-panel" aria-label="Browser screenshot"></aside>
         </div>
     </main>
 
-    <script src="app.js"></script>
+    <!-- Footer -->
+    <footer class="footer" role="contentinfo">
+        <p>Noor — AI-powered accessibility. Built with Gemini + Google ADK.</p>
+    </footer>
+
+    <script type="module" src="/static/app.js"></script>
 </body>
 </html>

@@ -1,5 +1,8 @@
-"""ADK agent definitions — exports root_agent for the ADK framework."""
+"""ADK agent definitions — exports root_agent and app for the ADK framework."""
 
-from src.agents.agent import root_agent
+from . import agent
 
-__all__ = ["root_agent"]
+root_agent = agent.root_agent
+app = agent.app
+
+__all__ = ["root_agent", "app"]

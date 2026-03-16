@@ -1,69 +1,24 @@
 """
-Noor Agent — Root ADK agent definition.
+Noor Agent — Root ADK agent definition with App-level runtime configuration.
 
-This module assembles the multi-agent hierarchy and exports the root_agent
+This module assembles the multi-agent hierarchy, wraps it in an ADK ``App``
+with context compaction and resumability, and exports the ``root_agent``
 that ADK uses as the entry point for all interactions.
 
 Architecture:
     NoorOrchestrator (root)
-    ├── ScreenVisionAgent
-    ├── NavigatorAgent
-    └── PageSummarizerAgent
+    ├── ScreenVisionAgent    (disallow_transfer_to_peers)
+    ├── NavigatorAgent       (disallow_transfer_to_peers, before_tool_callback)
+    └── PageSummarizerAgent  (disallow_transfer_to_peers)
 """
+
+from google.adk.apps.app import App, EventsCompactionConfig, ResumabilityConfig
 
 from src.agents.orchestrator import orchestrator_agent
 from src.agents.vision_agent import vision_agent
 from src.agents.navigator_agent import navigator_agent
 from src.agents.summarizer_agent import summarizer_agent
-
-from src.tools.vision_tools import (
-    analyze_current_page,
-    describe_page_aloud,
-    find_and_click,
-)
-from src.tools.browser_tools import (
-    navigate_to_url,
-    click_at_coordinates,
-    click_element_by_text,
-    type_into_field,
-    scroll_down,
-    scroll_up,
-    press_enter,
-    press_tab,
-    go_back_in_browser,
-    take_screenshot_of_page,
-    get_current_page_url,
-)
-from src.tools.page_tools import extract_page_text, get_page_metadata
-
-# Wire tools into sub-agents
-vision_agent.tools = [
-    analyze_current_page,
-    describe_page_aloud,
-    find_and_click,
-]
-
-navigator_agent.tools = [
-    navigate_to_url,
-    click_at_coordinates,
-    click_element_by_text,
-    type_into_field,
-    scroll_down,
-    scroll_up,
-    press_enter,
-    press_tab,
-    go_back_in_browser,
-    take_screenshot_of_page,
-    get_current_page_url,
-]
-
-summarizer_agent.tools = [
-    analyze_current_page,
-    describe_page_aloud,
-    extract_page_text,
-    get_page_metadata,
-    scroll_down,
-]
+from src.agents.plugins import get_plugins
 
 # Wire sub-agents into the orchestrator
 orchestrator_agent.sub_agents = [
@@ -74,3 +29,21 @@ orchestrator_agent.sub_agents = [
 
 # ADK convention: the framework discovers agents via this name
 root_agent = orchestrator_agent
+
+# App object — wraps root_agent with runtime configuration for:
+# - Context compaction: summarizes older events to keep context manageable
+#   during long web navigation sessions (many screenshots + tool calls).
+# - Resumability: recovers from interruptions (Cloud Run cold starts,
+#   WebSocket disconnects) without replaying the entire session.
+app = App(
+    name="noor",
+    root_agent=root_agent,
+    plugins=get_plugins(),
+    events_compaction_config=EventsCompactionConfig(
+        compaction_interval=5,  # Compact every 5 invocations
+        overlap_size=1,         # Keep 1 prior event in the new context window
+    ),
+    resumability_config=ResumabilityConfig(
+        is_resumable=True,
+    ),
+)

@@ -1,0 +1,157 @@
+{
+  "eval_set_id": "noor_summarization_tests",
+  "name": "Noor summarization agent tests",
+  "description": "Eval cases for page reading, content extraction, and summarization",
+  "eval_cases": [
+    {
+      "eval_id": "read_headlines",
+      "conversation": [
+        {
+          "invocation_id": "inv-001",
+          "user_content": {
+            "parts": [{"text": "Read me the headlines on this page"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "Here are the headlines I can see on the page."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "analyze_current_page",
+                "args": {"user_intent": "reading headlines"}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "noor",
+        "user_id": "test_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "summarize_page",
+      "conversation": [
+        {
+          "invocation_id": "inv-001",
+          "user_content": {
+            "parts": [{"text": "Summarize this page for me"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "Here's a summary of the page content."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "describe_page_aloud",
+                "args": {}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "noor",
+        "user_id": "test_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "read_search_results",
+      "conversation": [
+        {
+          "invocation_id": "inv-001",
+          "user_content": {
+            "parts": [{"text": "What are the search results?"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "Here are the search results. The first result is..."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "analyze_current_page",
+                "args": {"user_intent": "reading search results"}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "noor",
+        "user_id": "test_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "read_full_article",
+      "conversation": [
+        {
+          "invocation_id": "inv-001",
+          "user_content": {
+            "parts": [{"text": "Read the full article"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "Here is the full article text."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "extract_page_text",
+                "args": {"selector": "article"}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "noor",
+        "user_id": "test_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "describe_form_fields",
+      "conversation": [
+        {
+          "invocation_id": "inv-001",
+          "user_content": {
+            "parts": [{"text": "What form fields are on this page?"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "This page has a form with the following fields."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "analyze_current_page",
+                "args": {"user_intent": "identifying form fields"}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "noor",
+        "user_id": "test_user",
+        "state": {}
+      }
+    }
+  ]
+}

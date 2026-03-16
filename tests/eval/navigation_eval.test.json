@@ -1,0 +1,241 @@
+{
+  "eval_set_id": "noor_navigation_tests",
+  "name": "Noor navigation agent tests",
+  "description": "Eval cases for browser navigation, clicking, scrolling, and typing",
+  "eval_cases": [
+    {
+      "eval_id": "navigate_to_google",
+      "conversation": [
+        {
+          "invocation_id": "inv-001",
+          "user_content": {
+            "parts": [{"text": "Go to google.com"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "I've navigated to Google. I can see the search box in the center of the page."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "navigate_to_url",
+                "args": {"url": "https://www.google.com"}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "noor",
+        "user_id": "test_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "describe_current_page",
+      "conversation": [
+        {
+          "invocation_id": "inv-001",
+          "user_content": {
+            "parts": [{"text": "What's on the screen?"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "I can see the current page with its content and interactive elements."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "analyze_current_page",
+                "args": {}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "noor",
+        "user_id": "test_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "click_first_result",
+      "conversation": [
+        {
+          "invocation_id": "inv-001",
+          "user_content": {
+            "parts": [{"text": "Click the first search result"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "I've clicked on the first search result and the page is loading."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "find_and_click",
+                "args": {"target_description": "the first search result"}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "noor",
+        "user_id": "test_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "go_back",
+      "conversation": [
+        {
+          "invocation_id": "inv-001",
+          "user_content": {
+            "parts": [{"text": "Go back to the previous page"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "I've gone back to the previous page."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "go_back_in_browser",
+                "args": {}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "noor",
+        "user_id": "test_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "scroll_down",
+      "conversation": [
+        {
+          "invocation_id": "inv-001",
+          "user_content": {
+            "parts": [{"text": "Scroll down to see more content"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "I've scrolled down the page. Let me describe what's now visible."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "scroll_down",
+                "args": {}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "noor",
+        "user_id": "test_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "search_flow_multi_turn",
+      "conversation": [
+        {
+          "invocation_id": "inv-001",
+          "user_content": {
+            "parts": [{"text": "Go to Google"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "I've opened Google. I can see the search box in the center."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "navigate_to_url",
+                "args": {"url": "https://www.google.com"}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        },
+        {
+          "invocation_id": "inv-002",
+          "user_content": {
+            "parts": [{"text": "Search for cheap flights to Berlin"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "I've typed 'cheap flights to Berlin' and submitted the search. The results are now loading."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "type_into_field",
+                "args": {"text": "cheap flights to Berlin"}
+              },
+              {
+                "name": "press_enter",
+                "args": {}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "noor",
+        "user_id": "test_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "open_bbc_news",
+      "conversation": [
+        {
+          "invocation_id": "inv-001",
+          "user_content": {
+            "parts": [{"text": "Open BBC News"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "I've opened BBC News. The page shows the latest headlines and stories."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "navigate_to_url",
+                "args": {"url": "https://www.bbc.com/news"}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "noor",
+        "user_id": "test_user",
+        "state": {}
+      }
+    }
+  ]
+}

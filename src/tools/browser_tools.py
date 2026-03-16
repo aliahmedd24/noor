@@ -1,8 +1,8 @@
 """Browser automation tools for Noor ADK agents.
 
 Each function in this module is an ADK tool that the agent can invoke
-to interact with the browser. Tools access the shared BrowserManager
-instance via the module-level singleton.
+to interact with the browser. Tools access the shared BrowserService
+instance via the module-level reference.
 
 IMPORTANT: Every tool function MUST:
 1. Have comprehensive docstrings (ADK reads these)
@@ -15,36 +15,53 @@ from __future__ import annotations
 
 import structlog
 
+from google.adk.tools import ToolContext
+
 from src.browser.manager import BrowserManager
 from src.browser import actions
 
 logger = structlog.get_logger(__name__)
 
-_browser: BrowserManager | None = None
+_service = None  # BrowserService instance
 
 
-def set_browser_manager(browser: BrowserManager) -> None:
-    """Initialize the module's browser manager reference.
+def set_browser_service(service) -> None:
+    """Initialize the module's browser service reference.
 
     Args:
-        browser: The BrowserManager instance to use for all tool calls.
+        service: The BrowserService instance to use for all tool calls.
     """
-    global _browser
-    _browser = browser
+    global _service
+    _service = service
 
 
 def _check_browser() -> dict | None:
     """Return an error dict if browser is not initialized, else None."""
-    if _browser is None or not _browser.is_started:
+    if _service is None or not _service.is_started:
         return {
             "status": "error",
-            "error": "Browser not started. The browser manager must be "
+            "error": "Browser not started. The browser service must be "
             "initialized before using browser tools.",
         }
     return None
 
 
-async def navigate_to_url(url: str) -> dict:
+def _get_browser() -> BrowserManager:
+    """Return the BrowserManager from the service."""
+    return _service.browser
+
+
+async def _update_page_state(tool_context: ToolContext) -> None:
+    """Write current URL and title to ADK session state."""
+    try:
+        info = await _get_browser().get_page_info()
+        tool_context.state["current_url"] = info["url"]
+        tool_context.state["current_title"] = info["title"]
+    except Exception:
+        pass
+
+
+async def navigate_to_url(url: str, tool_context: ToolContext) -> dict:
     """Navigate the browser to a specific URL.
 
     Use this tool when the user wants to go to a website. The URL should be
@@ -56,6 +73,7 @@ async def navigate_to_url(url: str) -> dict:
 
     Args:
         url: The full URL to navigate to (must include https://).
+        tool_context: ADK tool context for session state updates.
 
     Returns:
         A dictionary with:
@@ -68,7 +86,8 @@ async def navigate_to_url(url: str) -> dict:
     if err:
         return err
     try:
-        result = await _browser.navigate(url)
+        result = await _get_browser().navigate(url)
+        await _update_page_state(tool_context)
         if result["success"]:
             return {
                 "status": "success",
@@ -86,7 +105,7 @@ async def navigate_to_url(url: str) -> dict:
         return {"status": "error", "url": url, "title": "", "error": str(e)}
 
 
-async def click_at_coordinates(x: int, y: int) -> dict:
+async def click_at_coordinates(x: int, y: int, tool_context: ToolContext) -> dict:
     """Click at specific pixel coordinates on the current page.
 
     Use this tool when you have identified an interactive element
@@ -99,6 +118,7 @@ async def click_at_coordinates(x: int, y: int) -> dict:
     Args:
         x: Horizontal pixel coordinate (0-1280, left to right).
         y: Vertical pixel coordinate (0-800, top to bottom).
+        tool_context: ADK tool context for session state updates.
 
     Returns:
         A dictionary with:
@@ -112,8 +132,9 @@ async def click_at_coordinates(x: int, y: int) -> dict:
         return err
     try:
         result = await actions.click_element(
-            _browser, coordinates=(x, y)
+            _get_browser(), coordinates=(x, y)
         )
+        await _update_page_state(tool_context)
         return {
             "status": "success" if result["success"] else "error",
             "url": result["url"],
@@ -124,7 +145,7 @@ async def click_at_coordinates(x: int, y: int) -> dict:
         return {"status": "error", "url": "", "title": "", "error": str(e)}
 
 
-async def click_element_by_text(text: str) -> dict:
+async def click_element_by_text(text: str, tool_context: ToolContext) -> dict:
     """Click an element that contains specific visible text.
 
     Use this tool as a fallback when coordinate-based clicking fails
@@ -133,6 +154,7 @@ async def click_element_by_text(text: str) -> dict:
     Args:
         text: The visible text of the element to click
               (e.g., "Sign In", "Submit", "Next").
+        tool_context: ADK tool context for session state updates.
 
     Returns:
         A dictionary with:
@@ -145,7 +167,8 @@ async def click_element_by_text(text: str) -> dict:
     if err:
         return err
     try:
-        result = await actions.click_element(_browser, description=text)
+        result = await actions.click_element(_get_browser(), description=text)
+        await _update_page_state(tool_context)
         return {
             "status": "success" if result["success"] else "error",
             "url": result["url"],
@@ -156,7 +179,7 @@ async def click_element_by_text(text: str) -> dict:
         return {"status": "error", "url": "", "title": "", "error": str(e)}
 
 
-async def type_into_field(text: str, x: int = 0, y: int = 0) -> dict:
+async def type_into_field(text: str, tool_context: ToolContext, x: int = 0, y: int = 0) -> dict:
     """Type text into the currently focused input field, or click coordinates first.
 
     Use this tool to fill in form fields, search boxes, or text areas.
@@ -165,6 +188,7 @@ async def type_into_field(text: str, x: int = 0, y: int = 0) -> dict:
 
     Args:
         text: The text to type into the field.
+        tool_context: ADK tool context for session state updates.
         x: Optional x-coordinate to click before typing. Use 0 to skip.
         y: Optional y-coordinate to click before typing. Use 0 to skip.
 
@@ -180,8 +204,9 @@ async def type_into_field(text: str, x: int = 0, y: int = 0) -> dict:
     try:
         coords = (x, y) if x > 0 and y > 0 else None
         result = await actions.type_text(
-            _browser, text=text, coordinates=coords
+            _get_browser(), text=text, coordinates=coords
         )
+        await _update_page_state(tool_context)
         return {
             "status": "success" if result["success"] else "error",
             "typed_text": text,
@@ -191,7 +216,7 @@ async def type_into_field(text: str, x: int = 0, y: int = 0) -> dict:
         return {"status": "error", "typed_text": "", "error": str(e)}
 
 
-async def scroll_down(pixels: int = 500) -> dict:
+async def scroll_down(pixels: int = 500, tool_context: ToolContext = None) -> dict:
     """Scroll the page downward to see more content.
 
     Use this tool when you need to see content below the current viewport,
@@ -201,6 +226,7 @@ async def scroll_down(pixels: int = 500) -> dict:
     Args:
         pixels: Number of pixels to scroll down. Default is 500
                 (about half the viewport).
+        tool_context: ADK tool context for session state updates.
 
     Returns:
         A dictionary with:
@@ -213,8 +239,10 @@ async def scroll_down(pixels: int = 500) -> dict:
         return err
     try:
         result = await actions.scroll_page(
-            _browser, direction="down", amount=pixels
+            _get_browser(), direction="down", amount=pixels
         )
+        if tool_context is not None:
+            await _update_page_state(tool_context)
         return {
             "status": "success" if result["success"] else "error",
             "scroll_y": result["scroll_position"]["y"],
@@ -224,11 +252,12 @@ async def scroll_down(pixels: int = 500) -> dict:
         return {"status": "error", "scroll_y": 0, "error": str(e)}
 
 
-async def scroll_up(pixels: int = 500) -> dict:
+async def scroll_up(pixels: int = 500, tool_context: ToolContext = None) -> dict:
     """Scroll the page upward to see previous content.
 
     Args:
         pixels: Number of pixels to scroll up. Default is 500.
+        tool_context: ADK tool context for session state updates.
 
     Returns:
         A dictionary with:
@@ -241,8 +270,10 @@ async def scroll_up(pixels: int = 500) -> dict:
         return err
     try:
         result = await actions.scroll_page(
-            _browser, direction="up", amount=pixels
+            _get_browser(), direction="up", amount=pixels
         )
+        if tool_context is not None:
+            await _update_page_state(tool_context)
         return {
             "status": "success" if result["success"] else "error",
             "scroll_y": result["scroll_position"]["y"],
@@ -252,11 +283,14 @@ async def scroll_up(pixels: int = 500) -> dict:
         return {"status": "error", "scroll_y": 0, "error": str(e)}
 
 
-async def press_enter() -> dict:
+async def press_enter(tool_context: ToolContext) -> dict:
     """Press the Enter/Return key.
 
     Use this after typing text in a search box or form field to submit it.
 
+    Args:
+        tool_context: ADK tool context for session state updates.
+
     Returns:
         A dictionary with:
         - status: 'success' or 'error'
@@ -266,7 +300,8 @@ async def press_enter() -> dict:
     if err:
         return err
     try:
-        result = await actions.press_key(_browser, "Enter")
+        result = await actions.press_key(_get_browser(), "Enter")
+        await _update_page_state(tool_context)
         return {
             "status": "success" if result["success"] else "error",
             "error": result["error"],
@@ -275,9 +310,12 @@ async def press_enter() -> dict:
         return {"status": "error", "error": str(e)}
 
 
-async def press_tab() -> dict:
+async def press_tab(tool_context: ToolContext) -> dict:
     """Press the Tab key to move focus to the next form element.
 
+    Args:
+        tool_context: ADK tool context for session state updates.
+
     Returns:
         A dictionary with:
         - status: 'success' or 'error'
@@ -287,7 +325,8 @@ async def press_tab() -> dict:
     if err:
         return err
     try:
-        result = await actions.press_key(_browser, "Tab")
+        result = await actions.press_key(_get_browser(), "Tab")
+        await _update_page_state(tool_context)
         return {
             "status": "success" if result["success"] else "error",
             "error": result["error"],
@@ -296,11 +335,14 @@ async def press_tab() -> dict:
         return {"status": "error", "error": str(e)}
 
 
-async def go_back_in_browser() -> dict:
+async def go_back_in_browser(tool_context: ToolContext) -> dict:
     """Navigate the browser back to the previous page.
 
     Use this when the user wants to go back, or when a navigation
     led to an unexpected page.
+
+    Args:
+        tool_context: ADK tool context for session state updates.
 
     Returns:
         A dictionary with:
@@ -313,7 +355,8 @@ async def go_back_in_browser() -> dict:
     if err:
         return err
     try:
-        result = await actions.go_back(_browser)
+        result = await actions.go_back(_get_browser())
+        await _update_page_state(tool_context)
         return {
             "status": "success" if result["success"] else "error",
             "url": result["url"],
@@ -324,12 +367,15 @@ async def go_back_in_browser() -> dict:
         return {"status": "error", "url": "", "title": "", "error": str(e)}
 
 
-async def take_screenshot_of_page() -> dict:
+async def take_screenshot_of_page(tool_context: ToolContext) -> dict:
     """Capture a screenshot of the current browser viewport.
 
     Use this tool to see what is currently displayed on the page.
     The screenshot will be analyzed to understand the page layout,
     identify interactive elements, and determine the current state.
+
+    Args:
+        tool_context: ADK tool context for session state updates.
 
     Returns:
         A dictionary with:
@@ -345,7 +391,8 @@ async def take_screenshot_of_page() -> dict:
     try:
         from src.browser.screenshot import capture_viewport
 
-        result = await capture_viewport(_browser)
+        result = await capture_viewport(_get_browser())
+        await _update_page_state(tool_context)
         if result.error:
             return {
                 "status": "error",
@@ -374,8 +421,11 @@ async def take_screenshot_of_page() -> dict:
         }
 
 
-async def get_current_page_url() -> dict:
+async def get_current_page_url(tool_context: ToolContext) -> dict:
     """Get the URL and title of the currently loaded page.
+
+    Args:
+        tool_context: ADK tool context for session state updates.
 
     Returns:
         A dictionary with:
@@ -388,7 +438,9 @@ async def get_current_page_url() -> dict:
     if err:
         return err
     try:
-        info = await _browser.get_page_info()
+        info = await _get_browser().get_page_info()
+        tool_context.state["current_url"] = info["url"]
+        tool_context.state["current_title"] = info["title"]
         return {
             "status": "success",
             "url": info["url"],

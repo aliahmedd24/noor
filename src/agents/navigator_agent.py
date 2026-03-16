@@ -5,19 +5,70 @@ from __future__ import annotations
 from pathlib import Path
 
 from google.adk.agents import LlmAgent
+from google.adk.agents.readonly_context import ReadonlyContext
+from google.genai import types
+
+from src.agents.schemas import NavigationOutput
+from src.agents.callbacks import log_tool_errors, validate_navigator_tool_inputs
+from src.agents.state_helpers import minify_state
+from src.tools.browser_tools import (
+    navigate_to_url,
+    click_at_coordinates,
+    click_element_by_text,
+    type_into_field,
+    scroll_down,
+    scroll_up,
+    press_enter,
+    press_tab,
+    go_back_in_browser,
+)
 
 _INSTRUCTIONS = (Path(__file__).parent / "instructions" / "navigator.txt").read_text()
+
+
+def _build_instruction(ctx: ReadonlyContext) -> str:
+    """Build navigator agent instructions with minified state values."""
+    from collections import defaultdict
+
+    state = dict(ctx.state) if ctx.state else {}
+    minified = minify_state(state)
+    safe = defaultdict(str, minified)
+    return _INSTRUCTIONS.format_map(safe)
+
 
 navigator_agent = LlmAgent(
     name="NavigatorAgent",
     model="gemini-2.5-flash",
     description=(
-        "Specialist agent for browser control and web navigation. Executes actions "
-        "like clicking buttons, typing text, scrolling, navigating to URLs, and "
-        "going back/forward. Use this agent when you need to INTERACT with the "
-        "web page — clicking, typing, scrolling, or navigating to a new URL."
+        "Executes browser actions: clicking buttons/links at pixel coordinates, "
+        "typing text into input fields, scrolling the page, navigating to URLs, "
+        "pressing keyboard keys (Enter, Tab), and going back/forward in history. "
+        "Use this agent when you need to INTERACT with the web page — performing "
+        "clicks, filling forms, submitting searches, or navigating to a new URL. "
+        "Requires vision analysis coordinates for precise clicking."
     ),
-    instruction=_INSTRUCTIONS,
+    instruction=_build_instruction,
     output_key="navigation_result",
-    tools=[],  # Populated in agent.py
+    output_schema=NavigationOutput,
+    generate_content_config=types.GenerateContentConfig(
+        temperature=0.1,
+        max_output_tokens=2048,
+        thinking_config=types.ThinkingConfig(
+            thinking_level="MINIMAL",
+        ),
+    ),
+    tools=[
+        navigate_to_url,
+        click_at_coordinates,
+        click_element_by_text,
+        type_into_field,
+        scroll_down,
+        scroll_up,
+        press_enter,
+        press_tab,
+        go_back_in_browser,
+    ],
+    before_tool_callback=validate_navigator_tool_inputs,
+    after_tool_callback=log_tool_errors,
+    disallow_transfer_to_peers=True,
 )

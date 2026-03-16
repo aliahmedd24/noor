@@ -1,0 +1,43 @@
+{
+  "criteria": {
+    "tool_trajectory_avg_score": {
+      "threshold": 0.8,
+      "match_type": "IN_ORDER"
+    },
+    "response_match_score": 0.5,
+    "final_response_match_v2": {
+      "threshold": 0.7,
+      "judge_model_options": {
+        "judge_model": "gemini-3.1-pro-preview",
+        "num_samples": 3
+      }
+    },
+    "rubric_based_final_response_quality_v1": {
+      "threshold": 0.8,
+      "judge_model_options": {
+        "judge_model": "gemini-3.1-pro-preview",
+        "num_samples": 3
+      },
+      "rubrics": [
+        {
+          "rubric_id": "narration_quality",
+          "rubric_content": {
+            "text_property": "The agent narrates its actions clearly and naturally, suitable for a visually impaired user who cannot see the screen."
+          }
+        },
+        {
+          "rubric_id": "actionable_output",
+          "rubric_content": {
+            "text_property": "The agent's response tells the user what happened and what they can do next, offering concrete options."
+          }
+        },
+        {
+          "rubric_id": "no_raw_coordinates",
+          "rubric_content": {
+            "text_property": "The agent never exposes raw pixel coordinates or technical details to the user. Element positions are described naturally (e.g., 'top right corner')."
+          }
+        }
+      ]
+    }
+  }
+}

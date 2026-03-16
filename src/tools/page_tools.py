@@ -9,35 +9,45 @@ from __future__ import annotations
 
 import structlog
 
-from src.browser.manager import BrowserManager
+from google.adk.tools import ToolContext
 
 logger = structlog.get_logger(__name__)
 
-_browser: BrowserManager | None = None
+_service = None  # BrowserService instance
 
 
-def set_browser_manager(browser: BrowserManager) -> None:
-    """Initialize the module's browser manager reference.
+def set_browser_service(service) -> None:
+    """Initialize the module's browser service reference.
 
     Args:
-        browser: The BrowserManager instance to use for page extraction.
+        service: The BrowserService instance to use for page extraction.
     """
-    global _browser
-    _browser = browser
+    global _service
+    _service = service
 
 
 def _check_browser() -> dict | None:
     """Return an error dict if browser is not initialized, else None."""
-    if _browser is None or not _browser.is_started:
+    if _service is None or not _service.is_started:
         return {
             "status": "error",
-            "error": "Browser not started. The browser manager must be "
+            "error": "Browser not started. The browser service must be "
             "initialized before using page tools.",
         }
     return None
 
 
-async def extract_page_text(selector: str = "body") -> dict:
+async def _update_page_state(tool_context: ToolContext) -> None:
+    """Write current URL and title to ADK session state."""
+    try:
+        info = await _service.browser.get_page_info()
+        tool_context.state["current_url"] = info["url"]
+        tool_context.state["current_title"] = info["title"]
+    except Exception:
+        pass
+
+
+async def extract_page_text(tool_context: ToolContext, selector: str = "body") -> dict:
     """Extract all visible text content from the current page.
 
     Uses Playwright to get the inner text of the page body or a specific
@@ -48,6 +58,7 @@ async def extract_page_text(selector: str = "body") -> dict:
     skipping hidden elements.
 
     Args:
+        tool_context: ADK tool context for session state updates.
         selector: CSS selector for the element to extract text from.
                   Default is 'body' which gets all visible text.
                   Use 'main' or 'article' to focus on primary content.
@@ -65,8 +76,10 @@ async def extract_page_text(selector: str = "body") -> dict:
     if err:
         return err
     try:
-        page = await _browser.get_page()
-        info = await _browser.get_page_info()
+        page = await _service.browser.get_page()
+        info = await _service.browser.get_page_info()
+
+        await _update_page_state(tool_context)
 
         # Try the requested selector, fall back to body
         try:
@@ -93,11 +106,14 @@ async def extract_page_text(selector: str = "body") -> dict:
         return {"status": "error", "text": "", "char_count": 0, "url": "", "title": "", "error": str(e)}
 
 
-async def get_page_metadata() -> dict:
+async def get_page_metadata(tool_context: ToolContext) -> dict:
     """Get metadata about the current page including URL, title, and basic info.
 
     Returns structured information about the currently loaded page that helps
     agents understand context without needing a full vision analysis.
+
+    Args:
+        tool_context: ADK tool context for session state updates.
 
     Returns:
         A dictionary with:
@@ -113,8 +129,10 @@ async def get_page_metadata() -> dict:
     if err:
         return err
     try:
-        info = await _browser.get_page_info()
-        page = await _browser.get_page()
+        info = await _service.browser.get_page_info()
+        page = await _service.browser.get_page()
+
+        await _update_page_state(tool_context)
 
         # Check if page has meaningful content
         body_text = await page.locator("body").inner_text(timeout=3000)

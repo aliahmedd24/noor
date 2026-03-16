@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" fill="none">
+  <!-- Arabic: نور -->
+  <text x="10" y="45" font-family="system-ui, -apple-system, sans-serif" font-size="38" font-weight="700" fill="#4fc3f7" direction="rtl" unicode-bidi="bidi-override">نور</text>
+  <!-- English: Noor -->
+  <text x="75" y="43" font-family="system-ui, -apple-system, sans-serif" font-size="32" font-weight="700" fill="#f0f0f0">Noor</text>
+  <!-- Tagline -->
+  <text x="75" y="57" font-family="system-ui, -apple-system, sans-serif" font-size="10" fill="#999">Your Eyes on the Web</text>
+</svg>
