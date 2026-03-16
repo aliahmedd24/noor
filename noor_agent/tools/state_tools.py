@@ -65,6 +65,82 @@ async def get_state_detail(key: str, tool_context: ToolContext) -> dict:
         }
 
 
+async def explain_what_happened(tool_context: ToolContext) -> dict:
+    """Explain the recent actions and their results to the user.
+
+    Use this tool when the user asks 'what just happened?', 'why didn't
+    that work?', 'what did you do?', or any question about recent actions.
+
+    Reads the session state to build a plain-English explanation of the
+    last actions taken, their results, and any errors that occurred.
+
+    Args:
+        tool_context: ADK tool context for session state access.
+
+    Returns:
+        A dictionary with:
+        - status: 'success'
+        - explanation: Human-readable summary of recent activity
+        - recent_tools: List of recent tool names and outcomes
+        - last_error: The most recent error, or empty string
+        - current_url: Where the browser is now
+        - current_title: Title of the current page
+    """
+    try:
+        state = tool_context.state
+
+        current_url = state.get("current_url", "about:blank")
+        current_title = state.get("current_title", "(no page)")
+        last_error = state.get("last_tool_error", "")
+
+        # Gather recent tool events from the UI event queue
+        ui_events = state.get("_ui_events", [])
+        # Also look at completed events that were already drained
+        recent_tools = []
+        for evt in ui_events:
+            if evt.get("type") == "tool_end":
+                recent_tools.append({
+                    "tool": evt.get("tool", "unknown"),
+                    "status": evt.get("status", "unknown"),
+                    "duration_ms": evt.get("duration_ms", 0),
+                })
+
+        # Build explanation
+        parts = []
+        parts.append(f"You're currently on: {current_title} ({current_url})")
+
+        if recent_tools:
+            parts.append("Recent actions:")
+            for t in recent_tools[-5:]:  # Last 5 actions
+                status_word = "succeeded" if t["status"] == "success" else "failed"
+                parts.append(f"  - {t['tool']}: {status_word}")
+        else:
+            parts.append("No recent tool activity recorded in this turn.")
+
+        if last_error:
+            parts.append(f"Last error: {last_error}")
+        else:
+            parts.append("No errors in the last action.")
+
+        return {
+            "status": "success",
+            "explanation": "\n".join(parts),
+            "recent_tools": recent_tools[-5:],
+            "last_error": last_error,
+            "current_url": current_url,
+            "current_title": current_title,
+        }
+    except Exception as e:
+        return {
+            "status": "success",
+            "explanation": f"Could not retrieve full history: {e}",
+            "recent_tools": [],
+            "last_error": str(e),
+            "current_url": "",
+            "current_title": "",
+        }
+
+
 async def task_complete(
     summary: str,
     tool_context: ToolContext,

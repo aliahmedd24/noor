@@ -46,23 +46,29 @@ async def _update_page_state(tool_context: ToolContext) -> None:
         pass
 
 
-async def extract_page_text(tool_context: ToolContext, selector: str = "body") -> dict:
-    """Extract all visible text content from the current page.
+async def extract_page_text(
+    tool_context: ToolContext,
+    selector: str = "body",
+) -> dict:
+    """Extract visible text content from the current page.
 
-    Uses Playwright to get the inner text of the page body or a specific
-    element. Useful for reading articles, extracting search results, or
-    getting the full text content of any page.
+    Returns the visible inner text of the page or a specific element.
+    Good for reading articles, search results, or any text content.
+
+    For discovering interactive elements (buttons, links, form fields,
+    dropdowns), use get_accessibility_tree instead — it is faster and
+    shows ARIA roles, labels, and values.
 
     Args:
         tool_context: ADK tool context for session state updates.
-        selector: CSS selector for the element to extract text from.
-                  Default is 'body' which gets all visible text.
-                  Use 'main' or 'article' to focus on primary content.
+        selector: CSS selector to scope the extraction. Default 'body'
+                  for the full page. Use 'main', 'article', 'form', or
+                  '[role="search"]' to focus on specific areas.
 
     Returns:
         A dictionary with:
         - status: 'success' or 'error'
-        - text: Extracted page text content (truncated to 8000 chars)
+        - text: Extracted visible text content
         - char_count: Total character count before truncation
         - url: Current page URL
         - title: Current page title
@@ -77,7 +83,6 @@ async def extract_page_text(tool_context: ToolContext, selector: str = "body") -
 
         await _update_page_state(tool_context)
 
-        # Try the requested selector, fall back to body
         try:
             element = page.locator(selector).first
             text = await element.inner_text(timeout=5000)
@@ -101,6 +106,74 @@ async def extract_page_text(tool_context: ToolContext, selector: str = "body") -
         return {
             "status": "error",
             "text": "",
+            "char_count": 0,
+            "url": "",
+            "title": "",
+            "error": str(e),
+        }
+
+
+async def get_accessibility_tree(
+    tool_context: ToolContext,
+    selector: str = "body",
+) -> dict:
+    """Get the ARIA accessibility tree of the current page.
+
+    Returns every interactive element with its ARIA role (button, link,
+    combobox, textbox, heading), accessible name, and current value.
+    This is FAST (under 1 second) compared to vision analysis.
+
+    Use this tool as your PRIMARY way to understand the page. It tells you:
+    - What form fields exist and their labels (for type_into_field)
+    - What buttons and links are available (for click_element_by_text)
+    - What dropdowns exist and their current values (for select_dropdown_option)
+    - Whether an action changed the page (call before and after)
+
+    Args:
+        tool_context: ADK tool context for session state updates.
+        selector: CSS selector to scope the tree. Default 'body' for the
+                  full page. Use 'form', 'main', 'nav', or
+                  '[role="search"]' to focus on specific areas.
+
+    Returns:
+        A dictionary with:
+        - status: 'success' or 'error'
+        - tree: The accessibility tree as structured text
+        - char_count: Total character count before truncation
+        - url: Current page URL
+        - title: Current page title
+        - error: Error message if status is 'error'
+    """
+    err = _check_browser()
+    if err:
+        return err
+    try:
+        page = await _service.browser.get_page()
+        info = await _service.browser.get_page_info()
+
+        await _update_page_state(tool_context)
+
+        try:
+            tree = await page.locator(selector).first.aria_snapshot()
+        except Exception:
+            tree = await page.locator("body").aria_snapshot()
+
+        if len(tree) > 6000:
+            tree = tree[:6000] + "\n\n[... tree truncated, use a narrower selector ...]"
+
+        return {
+            "status": "success",
+            "tree": tree,
+            "char_count": len(tree),
+            "url": info["url"],
+            "title": info["title"],
+            "error": None,
+        }
+    except Exception as e:
+        logger.error("get_accessibility_tree_failed", error=str(e))
+        return {
+            "status": "error",
+            "tree": "",
             "char_count": 0,
             "url": "",
             "title": "",
@@ -161,30 +234,30 @@ async def get_page_metadata(tool_context: ToolContext) -> dict:
         }
 
 
-async def get_page_accessibility_tree(tool_context: ToolContext, scope: str = "body") -> dict:
-    """Get the accessibility tree of the current page.
+async def read_page_aloud(tool_context: ToolContext) -> dict:
+    """Extract the main article or content from the page for natural narration.
 
-    Returns the ARIA structure of the page showing every interactive element
-    with its role (button, link, combobox, textbox, etc.), accessible name,
-    and current state/value. This is much faster than a screenshot analysis
-    and provides the exact labels needed for clicking and typing.
+    This tool is optimized for reading — it focuses on the primary content
+    (article text, main body) while stripping navigation, ads, footers,
+    and other noise. The result is structured for natural text-to-speech
+    narration with a clear headline, optional byline, and body paragraphs.
 
-    IMPORTANT: Use this tool to understand the page structure before interacting.
-    The tree shows:
-    - combobox elements (dropdowns) — click them to open, then select options
-    - textbox elements — type into them using their label
-    - button elements — click them by name
-    - Current values of form fields (e.g., combobox "Where from?": Bremen)
+    Use this tool when the user says 'read this page', 'read the article',
+    'what does it say?', or when you need to narrate page content aloud.
+
+    This is FAST (DOM extraction, <1 second) compared to vision-based
+    description tools. Prefer this for reading text content.
 
     Args:
         tool_context: ADK tool context for session state updates.
-        scope: CSS selector to scope the tree. Default 'body' for full page.
-               Use 'form', 'main', or '[role=\"search\"]' to focus on specific areas.
 
     Returns:
         A dictionary with:
         - status: 'success' or 'error'
-        - tree: The accessibility tree as formatted text (YAML-like)
+        - narration: Structured text ready for narration
+        - headline: The page/article headline (if found)
+        - word_count: Approximate word count
+        - content_type: 'article', 'search_results', or 'general'
         - url: Current page URL
         - title: Current page title
         - error: Error message if status is 'error'
@@ -195,30 +268,90 @@ async def get_page_accessibility_tree(tool_context: ToolContext, scope: str = "b
     try:
         page = await _service.browser.get_page()
         info = await _service.browser.get_page_info()
-
         await _update_page_state(tool_context)
 
-        try:
-            tree = await page.locator(scope).first.aria_snapshot()
-        except Exception:
-            tree = await page.locator("body").aria_snapshot()
+        # Try content-focused selectors in priority order
+        content_selectors = [
+            "article",
+            '[role="main"]',
+            "main",
+            ".content",
+            "#content",
+            ".post-content",
+            ".article-body",
+            ".entry-content",
+        ]
+        text = ""
+        content_type = "general"
+        for sel in content_selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.is_visible(timeout=500):
+                    text = await loc.inner_text(timeout=5000)
+                    if len(text.strip()) > 50:
+                        content_type = "article"
+                        break
+            except Exception:
+                continue
 
-        # Truncate very large trees to keep LLM context manageable
-        if len(tree) > 6000:
-            tree = tree[:6000] + "\n\n[... tree truncated, use a narrower scope ...]"
+        # Fallback to body
+        if not text or len(text.strip()) < 50:
+            text = await page.locator("body").inner_text(timeout=5000)
+            content_type = "general"
+
+        # Try to extract headline
+        headline = ""
+        for h_sel in ["h1", "article h1", "main h1", '[role="heading"][aria-level="1"]']:
+            try:
+                h = await page.locator(h_sel).first.inner_text(timeout=1000)
+                if h and len(h.strip()) > 2:
+                    headline = h.strip()
+                    break
+            except Exception:
+                continue
+
+        if not headline:
+            headline = info.get("title", "")
+
+        # Detect search results
+        if "search" in info.get("url", "").lower() or "results" in info.get("title", "").lower():
+            content_type = "search_results"
+
+        # Build narration
+        lines = text.strip().split("\n")
+        # Remove very short lines (likely nav items) from the top
+        cleaned = [ln.strip() for ln in lines if len(ln.strip()) > 5]
+
+        # Truncate for LLM context
+        body = "\n".join(cleaned)
+        if len(body) > 6000:
+            body = body[:6000] + "\n\n[Content continues below — I can scroll down to read more.]"
+
+        word_count = len(body.split())
+
+        narration_parts = []
+        if headline:
+            narration_parts.append(f'"{headline}"')
+        narration_parts.append(body)
 
         return {
             "status": "success",
-            "tree": tree,
+            "narration": "\n\n".join(narration_parts),
+            "headline": headline,
+            "word_count": word_count,
+            "content_type": content_type,
             "url": info["url"],
             "title": info["title"],
             "error": None,
         }
     except Exception as e:
-        logger.error("get_page_accessibility_tree_failed", error=str(e))
+        logger.error("read_page_aloud_failed", error=str(e))
         return {
             "status": "error",
-            "tree": "",
+            "narration": "",
+            "headline": "",
+            "word_count": 0,
+            "content_type": "general",
             "url": "",
             "title": "",
             "error": str(e),

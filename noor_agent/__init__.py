@@ -3,6 +3,7 @@
 from . import agent
 
 root_agent = agent.root_agent
+streaming_root_agent = agent.streaming_root_agent
 app = agent.app
 
-__all__ = ["root_agent", "app"]
+__all__ = ["root_agent", "streaming_root_agent", "app"]

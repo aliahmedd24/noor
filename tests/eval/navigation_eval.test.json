@@ -190,11 +190,7 @@
             "tool_uses": [
               {
                 "name": "type_into_field",
-                "args": {"text": "cheap flights to Berlin"}
-              },
-              {
-                "name": "press_enter",
-                "args": {}
+                "args": {"text": "cheap flights to Berlin", "submit": true}
               }
             ],
             "intermediate_responses": []

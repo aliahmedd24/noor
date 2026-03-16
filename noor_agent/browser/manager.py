@@ -21,6 +21,8 @@ from playwright.async_api import (
     async_playwright,
 )
 
+from .stealth import STEALTH_LAUNCH_ARGS, apply_stealth
+
 logger = structlog.get_logger(__name__)
 
 
@@ -40,6 +42,7 @@ class BrowserManager:
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-infobars",
+        *STEALTH_LAUNCH_ARGS,
     ]
 
     DEFAULT_VIEWPORT_WIDTH: int = 1280
@@ -98,9 +101,14 @@ class BrowserManager:
                 },
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
                 ),
+                locale="en-US",
+                timezone_id="America/New_York",
+                color_scheme="light",
             )
+            # Apply stealth patches BEFORE any page is created
+            await apply_stealth(self._context)
             self._context.set_default_timeout(15000)
             self._page = await self._context.new_page()
 
@@ -117,6 +125,7 @@ class BrowserManager:
             self._launch_strategy = "cdp"
             if self._browser.contexts:
                 self._context = self._browser.contexts[0]
+                await apply_stealth(self._context)
                 if self._context.pages:
                     self._page = self._context.pages[0]
             logger.info("browser_cdp_connected", endpoint=endpoint)
@@ -207,6 +216,10 @@ class BrowserManager:
     async def navigate(self, url: str, wait_until: str = "domcontentloaded") -> dict:
         """Navigate to a URL and wait for the page to load.
 
+        Includes automatic detection and handling of Cloudflare / bot-check
+        challenge pages.  If a challenge is detected after the initial load,
+        waits up to 10 seconds for it to resolve before returning.
+
         Args:
             url: The URL to navigate to. Must include protocol (https://).
             wait_until: Playwright wait condition. Default: 'domcontentloaded'.
@@ -217,10 +230,33 @@ class BrowserManager:
         try:
             page = await self.get_page()
             await page.goto(url, wait_until=wait_until)
+
+            # Check for challenge / interstitial pages and wait them out
+            title = await page.title()
+            challenge_titles = [
+                "just a moment",      # Cloudflare
+                "attention required",  # Cloudflare
+                "checking your browser",
+                "access denied",
+                "please wait",
+                "verify you are human",
+            ]
+            if any(ct in title.lower() for ct in challenge_titles):
+                logger.info("challenge_page_detected", title=title, url=url)
+                # Wait for the challenge to auto-resolve (JS redirect).
+                # Poll title every 2s for up to 12s total.
+                import asyncio as _aio
+                for _ in range(6):
+                    await _aio.sleep(2)
+                    title = await page.title()
+                    if not any(ct in title.lower() for ct in challenge_titles):
+                        break
+                logger.info("challenge_wait_done", final_title=title)
+
             return {
                 "success": True,
                 "url": page.url,
-                "title": await page.title(),
+                "title": title,
                 "error": None,
             }
         except Exception as e:

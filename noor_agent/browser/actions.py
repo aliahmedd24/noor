@@ -143,24 +143,43 @@ async def click_element(
         }
 
 
+def _normalize_text(text: str) -> str:
+    """Normalize dashes and whitespace for robust text matching.
+
+    LLMs often output regular hyphens (-) while websites use en-dashes (–),
+    em-dashes (—), or other Unicode variants. This normalizes all dash-like
+    characters to a regular hyphen so text matching doesn't fail silently.
+    """
+    import re
+    # Replace en-dash, em-dash, minus sign, and other dash variants with hyphen
+    return re.sub(r'[\u2013\u2014\u2015\u2012\u2010\u2011\uFE58\uFE63\uFF0D]', '-', text)
+
+
 async def _click_by_description(page, description: str) -> dict:
     """Try multiple strategies to click an element by text description.
 
     Strategy order (each with a short timeout to avoid wasting iterations):
     1. get_by_text — standard text match
-    2. get_by_role("option") — for dropdown menu items
-    3. get_by_role("menuitem") — for menu items
-    4. get_by_label — for labeled input fields
-    5. force click — bypass visibility/interception checks
+    2. get_by_text with normalized dashes — handles en-dash/em-dash mismatches
+    3. get_by_role("option") — for dropdown menu items
+    4. get_by_role("menuitem") — for menu items
+    5. get_by_label — for labeled input fields
+    6. force click — bypass visibility/interception checks
     """
-    strategies = [
-        ("get_by_text", lambda: page.get_by_text(description, exact=False).first),
-        ("role_option", lambda: page.get_by_role("option", name=description).first),
-        ("role_menuitem", lambda: page.get_by_role("menuitem", name=description).first),
-        ("role_link", lambda: page.get_by_role("link", name=description).first),
-        ("role_button", lambda: page.get_by_role("button", name=description).first),
-        ("label", lambda: page.get_by_label(description).first),
-    ]
+    # Try both the original description and a dash-normalized version
+    normalized = _normalize_text(description)
+    variants = [description] if normalized == description else [description, normalized]
+
+    strategies = []
+    for desc in variants:
+        strategies.extend([
+            ("get_by_text", lambda d=desc: page.get_by_text(d, exact=False).first),
+            ("role_option", lambda d=desc: page.get_by_role("option", name=d).first),
+            ("role_menuitem", lambda d=desc: page.get_by_role("menuitem", name=d).first),
+            ("role_link", lambda d=desc: page.get_by_role("link", name=d).first),
+            ("role_button", lambda d=desc: page.get_by_role("button", name=d).first),
+            ("label", lambda d=desc: page.get_by_label(d).first),
+        ])
 
     last_error = ""
     for strategy_name, make_locator in strategies:
@@ -175,13 +194,14 @@ async def _click_by_description(page, description: str) -> dict:
             continue
 
     # Final fallback: force click on get_by_text (bypasses visibility/interception)
-    try:
-        locator = page.get_by_text(description, exact=False).first
-        await locator.click(timeout=3000, force=True)
-        logger.info("click_description", description=description, strategy="force")
-        return {"success": True, "element_text": description}
-    except Exception as e:
-        last_error = str(e)
+    for desc in variants:
+        try:
+            locator = page.get_by_text(desc, exact=False).first
+            await locator.click(timeout=3000, force=True)
+            logger.info("click_description", description=description, strategy="force")
+            return {"success": True, "element_text": description}
+        except Exception as e:
+            last_error = str(e)
 
     logger.error("click_failed", error=last_error)
     return {"success": False, "error": f"Click failed: {last_error}"}
@@ -314,6 +334,115 @@ async def _try_select_autocomplete(page) -> bool:
         pass
 
     return False
+
+
+async def select_dropdown_option(
+    browser: BrowserManager,
+    trigger_label: str,
+    option_text: str,
+) -> dict:
+    """Open a dropdown/combobox and select an option — atomic operation.
+
+    Handles Material Design dropdowns (Google Flights, etc.) where options
+    are hidden until the trigger is clicked. Tries multiple strategies to
+    find and open the trigger, then multiple strategies to select the option.
+
+    Args:
+        browser: The BrowserManager instance.
+        trigger_label: ARIA label or visible text of the dropdown trigger
+            (e.g., "Select your ticket type. Round trip", "Round trip").
+        option_text: The text of the option to select (e.g., "One way").
+
+    Returns:
+        dict with keys: success, selected_option, error.
+    """
+    try:
+        page = await browser.get_page()
+
+        # --- Step 1: Click the dropdown trigger to open the menu ---
+        trigger_opened = False
+        trigger_strategies = [
+            ("combobox", lambda: page.get_by_role("combobox", name=trigger_label).first),
+            ("button", lambda: page.get_by_role("button", name=trigger_label).first),
+            ("label", lambda: page.get_by_label(trigger_label).first),
+            ("text", lambda: page.get_by_text(trigger_label, exact=False).first),
+        ]
+        for strategy_name, make_locator in trigger_strategies:
+            try:
+                loc = make_locator()
+                await loc.click(timeout=3000)
+                trigger_opened = True
+                logger.info("dropdown_trigger_clicked", label=trigger_label, strategy=strategy_name)
+                break
+            except Exception:
+                continue
+
+        if not trigger_opened:
+            return {
+                "success": False,
+                "selected_option": None,
+                "error": f"Could not find dropdown trigger '{trigger_label}'.",
+            }
+
+        # Wait for menu/listbox to appear
+        await page.wait_for_timeout(500)
+
+        # --- Step 2: Select the option from the now-visible menu ---
+        option_strategies = [
+            ("role_option", lambda: page.get_by_role("option", name=option_text).first),
+            ("role_menuitem", lambda: page.get_by_role("menuitem", name=option_text).first),
+            ("listitem_text", lambda: page.locator('[role="listbox"] >> text=' + repr(option_text)).first),
+            ("menu_text", lambda: page.locator('[role="menu"] >> text=' + repr(option_text)).first),
+            ("any_visible_text", lambda: page.get_by_text(option_text, exact=True).first),
+        ]
+        for strategy_name, make_locator in option_strategies:
+            try:
+                loc = make_locator()
+                await loc.click(timeout=3000)
+                await page.wait_for_timeout(500)
+                logger.info(
+                    "dropdown_option_selected",
+                    option=option_text,
+                    strategy=strategy_name,
+                )
+                return {
+                    "success": True,
+                    "selected_option": option_text,
+                    "error": None,
+                }
+            except Exception:
+                continue
+
+        # Fallback: force-click any matching text
+        try:
+            loc = page.get_by_text(option_text, exact=False).first
+            await loc.click(timeout=3000, force=True)
+            await page.wait_for_timeout(500)
+            logger.info("dropdown_option_selected", option=option_text, strategy="force")
+            return {
+                "success": True,
+                "selected_option": option_text,
+                "error": None,
+            }
+        except Exception as e:
+            # Close any open menu by pressing Escape
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "selected_option": None,
+                "error": f"Dropdown opened but could not select '{option_text}': {e}",
+            }
+
+    except Exception as e:
+        logger.error("select_dropdown_failed", error=str(e))
+        return {
+            "success": False,
+            "selected_option": None,
+            "error": f"Dropdown selection failed: {e}",
+        }
 
 
 async def scroll_page(

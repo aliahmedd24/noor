@@ -62,10 +62,13 @@ let scriptProcessor = null;
 let analyserNode = null;
 let isConnected = false;
 let reconnectDelay = 1000; // Exponential backoff start
+let thinkingTimer = null;  // "Still thinking" reminder
 
-// Audio playback queue
+// Audio playback — single AudioContext reused across chunks for gapless output
 const audioQueue = [];
 let isPlaying = false;
+let playbackCtx = null;   // Reused 24 kHz AudioContext
+let nextStartTime = 0;    // Scheduled start time for gapless chaining
 
 // ================================================================
 // Status Helpers
@@ -89,9 +92,10 @@ function connectWebSocket() {
   currentUserId = "user-" + Math.random().toString(36).substr(2, 8);
   currentSessionId = "session-" + Date.now();
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  // Use text endpoint for text-based interaction;
-  // bidi endpoint (/ws/) is for voice streaming only
-  ws = new WebSocket(`${protocol}//${location.host}/ws/text/${currentUserId}/${currentSessionId}`);
+  // Bidi endpoint handles both voice (binary PCM) and text (JSON).
+  // The server uses the native-audio Live API model so responses are
+  // always spoken aloud — ideal for accessibility.
+  ws = new WebSocket(`${protocol}//${location.host}/ws/${currentUserId}/${currentSessionId}`);
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
@@ -103,9 +107,13 @@ function connectWebSocket() {
 
     // Send current settings
     ws.send(JSON.stringify({ type: "settings", ...settings.current }));
+
+    // Start live screen stream
+    screenshotPanel.connectStream(currentSessionId);
   };
 
   ws.onmessage = (event) => {
+    clearThinkingTimer();
     if (event.data instanceof ArrayBuffer) {
       enqueueAudio(event.data);
     } else {
@@ -122,6 +130,7 @@ function connectWebSocket() {
     isConnected = false;
     micButton.disable();
     stopMicrophone();
+    screenshotPanel.disconnectStream();
     setStatus("Disconnected. Reconnecting...", "error");
 
     // Exponential backoff: 1s, 2s, 4s, 8s, ... max 30s
@@ -139,6 +148,9 @@ function connectWebSocket() {
 // ================================================================
 
 function handleEvent(event) {
+  // Any event from the server means Noor is responding — clear the timer
+  clearThinkingTimer();
+
   // Screenshot events
   if (event.type === "screenshot") {
     screenshotPanel.update(event.data, event.annotations || []);
@@ -202,6 +214,9 @@ function handleEvent(event) {
 // ================================================================
 
 async function startMicrophone() {
+  // Barge-in: stop any playing audio when the user starts speaking
+  stopPlayback();
+
   try {
     audioContext = new AudioContext({ sampleRate: 16000 });
     mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -279,39 +294,68 @@ function stopMicrophone() {
 
 function enqueueAudio(arrayBuffer) {
   audioQueue.push(arrayBuffer);
-  if (!isPlaying) playNext();
+  if (!isPlaying) drainAudioQueue();
 }
 
-async function playNext() {
+function drainAudioQueue() {
   if (audioQueue.length === 0) {
     isPlaying = false;
     return;
   }
   isPlaying = true;
 
-  const buffer = audioQueue.shift();
-  try {
-    const playCtx = new AudioContext({ sampleRate: 24000 });
-    const int16 = new Int16Array(buffer);
-    const float32 = new Float32Array(int16.length);
-    for (let i = 0; i < int16.length; i++) {
-      float32[i] = int16[i] / 32768;
+  // Lazily create (or resume) a single 24 kHz AudioContext
+  if (!playbackCtx || playbackCtx.state === "closed") {
+    playbackCtx = new AudioContext({ sampleRate: 24000 });
+    nextStartTime = 0;
+  }
+  if (playbackCtx.state === "suspended") {
+    playbackCtx.resume();
+  }
+
+  // Schedule all queued chunks back-to-back for gapless playback
+  let lastSource = null;
+  while (audioQueue.length > 0) {
+    const buffer = audioQueue.shift();
+    try {
+      const int16 = new Int16Array(buffer);
+      const float32 = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) {
+        float32[i] = int16[i] / 32768;
+      }
+
+      const audioBuffer = playbackCtx.createBuffer(1, float32.length, 24000);
+      audioBuffer.getChannelData(0).set(float32);
+
+      const src = playbackCtx.createBufferSource();
+      src.buffer = audioBuffer;
+      src.connect(playbackCtx.destination);
+
+      // Schedule at the end of the previous chunk (or now if first)
+      const startAt = Math.max(nextStartTime, playbackCtx.currentTime);
+      src.start(startAt);
+      nextStartTime = startAt + audioBuffer.duration;
+      lastSource = src;
+    } catch {
+      // Skip bad chunks
     }
+  }
 
-    const audioBuffer = playCtx.createBuffer(1, float32.length, 24000);
-    audioBuffer.getChannelData(0).set(float32);
-
-    const src = playCtx.createBufferSource();
-    src.buffer = audioBuffer;
-    src.connect(playCtx.destination);
-    src.onended = () => {
-      playCtx.close();
-      playNext();
-    };
-    src.start();
-  } catch {
+  // When the last scheduled chunk finishes, check for more
+  if (lastSource) {
+    lastSource.onended = () => drainAudioQueue();
+  } else {
     isPlaying = false;
-    playNext();
+  }
+}
+
+function stopPlayback() {
+  audioQueue.length = 0;
+  isPlaying = false;
+  nextStartTime = 0;
+  if (playbackCtx && playbackCtx.state !== "closed") {
+    playbackCtx.close().catch(() => {});
+    playbackCtx = null;
   }
 }
 
@@ -319,14 +363,39 @@ async function playNext() {
 // Text Input
 // ================================================================
 
+const THINKING_MESSAGES = [
+  "Just a moment, I'm working on that...",
+  "Still on it — give me a sec...",
+  "Hang tight, I'm figuring this out...",
+  "Working on it, one moment please...",
+  "Bear with me, almost there...",
+];
+
+function startThinkingTimer() {
+  clearThinkingTimer();
+  thinkingTimer = setTimeout(() => {
+    const msg = THINKING_MESSAGES[Math.floor(Math.random() * THINKING_MESSAGES.length)];
+    transcript.addMessage("noor", msg);
+    setStatus(msg, "connected");
+  }, 15000);
+}
+
+function clearThinkingTimer() {
+  if (thinkingTimer) {
+    clearTimeout(thinkingTimer);
+    thinkingTimer = null;
+  }
+}
+
 function sendText(text) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     toast.error("Not connected. Please wait...");
     return;
   }
-  // Text endpoint expects plain text, not JSON
-  ws.send(text);
+  // Bidi endpoint accepts JSON {"type": "text", "content": "..."}
+  ws.send(JSON.stringify({ type: "text", content: text }));
   transcript.addMessage("user", text);
+  startThinkingTimer();
 }
 
 // ================================================================

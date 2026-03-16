@@ -209,21 +209,39 @@ async def describe_page_aloud(tool_context: ToolContext) -> dict:
         }
 
 
-async def find_and_click(target_description: str, tool_context: ToolContext) -> dict:
-    """Find a specific element on the page by description and click it.
+async def find_and_click(
+    target_description: str,
+    tool_context: ToolContext,
+    x: int = 0,
+    y: int = 0,
+) -> dict:
+    """Find an element on the page and click it.
 
-    This tool combines vision analysis with clicking. It takes a screenshot,
-    uses AI to find the element matching the description, and clicks its
-    center coordinates.
+    Two modes:
+    1. **Coordinate mode** (fast): Pass x and y from a previous vision
+       analysis. The tool clicks directly at those pixel coordinates
+       without taking a new screenshot.
+    2. **Vision mode** (default): Pass only target_description. The tool
+       takes a screenshot, uses AI vision to locate the element, then
+       clicks its center.
 
-    Use this for commands like 'click the sign in button', 'open the first result',
-    'click the search box'.
+    Use coordinate mode when you already know the position from
+    analyze_current_page. Use vision mode when you need to find an
+    element by description (e.g., 'click the blue Sign In button').
+
+    The viewport is 1280 x 800 pixels. (0,0) is the top-left corner.
 
     Args:
         target_description: Natural language description of what to click.
-                           Example: "the blue Sign In button", "the first search result",
-                           "the search input field"
+                           Example: "the blue Sign In button", "the first
+                           search result", "the search input field".
+                           Always provide this even in coordinate mode
+                           (for logging).
         tool_context: ADK tool context for session state updates.
+        x: Horizontal pixel coordinate (0-1280). Pass >0 with y for
+           coordinate mode. Default 0 (triggers vision mode).
+        y: Vertical pixel coordinate (0-800). Pass >0 with x for
+           coordinate mode. Default 0 (triggers vision mode).
 
     Returns:
         A dictionary containing:
@@ -233,6 +251,43 @@ async def find_and_click(target_description: str, tool_context: ToolContext) -> 
         - coordinates: The (x, y) coordinates that were clicked, or None
         - error: Error description if the element wasn't found
     """
+    # ── Coordinate mode: click directly ──
+    if x > 0 and y > 0:
+        err = _check_ready()
+        if err:
+            return err
+        try:
+            click_result = await actions.click_element(
+                _service.browser, coordinates=(x, y)
+            )
+            await _update_page_state(tool_context)
+            if click_result["success"]:
+                return {
+                    "status": "success",
+                    "clicked": True,
+                    "target": target_description,
+                    "coordinates": {"x": x, "y": y},
+                    "url": click_result["url"],
+                    "title": click_result["title"],
+                    "error": None,
+                }
+            return {
+                "status": "error",
+                "clicked": False,
+                "target": target_description,
+                "coordinates": {"x": x, "y": y},
+                "error": click_result["error"],
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "clicked": False,
+                "target": target_description,
+                "coordinates": {"x": x, "y": y},
+                "error": str(e),
+            }
+
+    # ── Vision mode: screenshot → AI identification → click ──
     err = _check_ready()
     if err:
         return err
@@ -261,9 +316,9 @@ async def find_and_click(target_description: str, tool_context: ToolContext) -> 
                 "error": f"Could not find '{target_description}' on the current page.",
             }
 
-        x, y = coords
+        cx, cy = coords
         click_result = await actions.click_element(
-            _service.browser, coordinates=(x, y)
+            _service.browser, coordinates=(cx, cy)
         )
 
         await _update_page_state(tool_context)
@@ -275,7 +330,7 @@ async def find_and_click(target_description: str, tool_context: ToolContext) -> 
                 "status": "success",
                 "clicked": True,
                 "target": target_description,
-                "coordinates": {"x": x, "y": y},
+                "coordinates": {"x": cx, "y": cy},
                 "url": click_result["url"],
                 "title": click_result["title"],
                 "screenshot_base64": screenshot_b64,
@@ -285,7 +340,7 @@ async def find_and_click(target_description: str, tool_context: ToolContext) -> 
             "status": "error",
             "clicked": False,
             "target": target_description,
-            "coordinates": {"x": x, "y": y},
+            "coordinates": {"x": cx, "y": cy},
             "error": click_result["error"],
         }
     except Exception as e:

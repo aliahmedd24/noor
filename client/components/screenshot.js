@@ -1,8 +1,10 @@
 /**
  * Screenshot — Live browser screenshot panel with annotation overlay.
  *
- * Shows the latest screenshot from Noor's browser session.
- * Annotations (bounding boxes around interactive elements) are drawn on a canvas overlay.
+ * Shows a real-time feed of Noor's browser session via a dedicated
+ * WebSocket (/ws-screen/{session_id}) streaming JPEG frames at ~2 FPS.
+ * Annotations (bounding boxes around interactive elements) are drawn
+ * on a canvas overlay when provided via the update() method.
  */
 
 export class ScreenshotPanel {
@@ -14,7 +16,10 @@ export class ScreenshotPanel {
     this._img = null;
     this._canvas = null;
     this._toggleBtn = null;
+    this._liveDot = null;
     this._visible = true;
+    this._screenWs = null;
+    this._lastBlobUrl = null;
     this._init();
   }
 
@@ -23,14 +28,22 @@ export class ScreenshotPanel {
     this._el.setAttribute("role", "complementary");
     this._el.setAttribute("aria-label", "Browser screenshot");
 
-    // Header with toggle
+    // Header with live dot + toggle
     const header = document.createElement("div");
     header.className = "screenshot-panel__header";
 
-    const title = document.createElement("span");
-    title.className = "screenshot-panel__title";
-    title.textContent = "Noor's View";
-    header.appendChild(title);
+    const titleWrap = document.createElement("span");
+    titleWrap.className = "screenshot-panel__title";
+
+    this._liveDot = document.createElement("span");
+    this._liveDot.className = "screenshot-panel__live-dot";
+    this._liveDot.setAttribute("aria-hidden", "true");
+    this._liveDot.hidden = true;
+    titleWrap.appendChild(this._liveDot);
+
+    const titleText = document.createTextNode(" Noor\u2019s View");
+    titleWrap.appendChild(titleText);
+    header.appendChild(titleWrap);
 
     this._toggleBtn = document.createElement("button");
     this._toggleBtn.className = "screenshot-panel__toggle";
@@ -70,6 +83,71 @@ export class ScreenshotPanel {
       this.hide();
     }
   }
+
+  // ── Live Screen Stream ──────────────────────────────────────────
+
+  /**
+   * Connect to the live screen-stream WebSocket endpoint.
+   * @param {string} sessionId  The session ID to subscribe to
+   */
+  connectStream(sessionId) {
+    this.disconnectStream();
+
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${protocol}//${location.host}/ws-screen/${sessionId}`;
+    this._screenWs = new WebSocket(url);
+    this._screenWs.binaryType = "blob";
+
+    this._screenWs.onopen = () => {
+      this._liveDot.hidden = false;
+    };
+
+    this._screenWs.onmessage = (event) => {
+      if (event.data instanceof Blob) {
+        this._updateFromBlob(event.data);
+      }
+    };
+
+    this._screenWs.onclose = () => {
+      this._liveDot.hidden = true;
+    };
+
+    this._screenWs.onerror = () => {
+      this._liveDot.hidden = true;
+    };
+  }
+
+  /**
+   * Disconnect from the live screen-stream WebSocket.
+   */
+  disconnectStream() {
+    if (this._screenWs) {
+      this._screenWs.close();
+      this._screenWs = null;
+    }
+    this._liveDot.hidden = true;
+    if (this._lastBlobUrl) {
+      URL.revokeObjectURL(this._lastBlobUrl);
+      this._lastBlobUrl = null;
+    }
+  }
+
+  /**
+   * Update the screenshot image from a raw JPEG Blob (from the stream).
+   * @param {Blob} blob  JPEG image blob
+   */
+  _updateFromBlob(blob) {
+    // Revoke previous blob URL to avoid memory leaks
+    if (this._lastBlobUrl) {
+      URL.revokeObjectURL(this._lastBlobUrl);
+    }
+    this._lastBlobUrl = URL.createObjectURL(blob);
+    this._img.src = this._lastBlobUrl;
+    this._img.hidden = false;
+    this._placeholder.hidden = true;
+  }
+
+  // ── Existing API (base64 + annotations) ─────────────────────────
 
   /**
    * Update the screenshot with new image data and optional annotations.

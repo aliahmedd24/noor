@@ -42,7 +42,7 @@ class TestGreetingAndConversation:
         """A simple greeting should not trigger browser tools."""
         events = await ask_noor(runner, session, "Hi there!")
         tools = get_tool_calls(events)
-        browser_tools = {"navigate_to_url", "click_at_coordinates", "scroll_down"}
+        browser_tools = {"navigate_to_url", "find_and_click", "scroll_down"}
         assert not browser_tools.intersection(tools)
 
 

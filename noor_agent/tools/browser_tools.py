@@ -195,9 +195,12 @@ async def type_into_field(
     field_label: str = "",
     x: int = 0,
     y: int = 0,
+    submit: bool = False,
+    tab_after: bool = False,
 ) -> dict:
     """Type text into a form field, search box, or text area.
 
+    This is the unified tool for all text input AND key presses after typing.
     You can target the field in two ways (in priority order):
     1. field_label: The ARIA label of the field from the accessibility tree
        (e.g., "Where from?", "Departure", "Search"). This is the PREFERRED
@@ -208,80 +211,173 @@ async def type_into_field(
     After typing, this tool automatically selects the first autocomplete
     suggestion if a dropdown appears (handles Google Flights, etc.).
 
+    Special modes:
+    - Set submit=True to press Enter after typing (submits forms/searches).
+    - Set tab_after=True to press Tab after typing (moves to next field).
+    - Set text="" with submit=True to just press Enter on the focused element.
+    - Set text="" with tab_after=True to just press Tab to the next field.
+
     Args:
-        text: The text to type into the field.
+        text: The text to type into the field. Can be empty if you only
+              need to press Enter (submit=True) or Tab (tab_after=True).
         tool_context: ADK tool context for session state updates.
         field_label: The accessible label of the field (from accessibility tree).
                      Preferred over coordinates. Example: "Where from?", "Email".
         x: Optional x-coordinate to click before typing. Use 0 to skip.
         y: Optional y-coordinate to click before typing. Use 0 to skip.
+        submit: Press Enter after typing. Use for form/search submission.
+                Default: False.
+        tab_after: Press Tab after typing to move to the next form field.
+                   Default: False.
 
     Returns:
         A dictionary with:
         - status: 'success' or 'error'
         - typed_text: The text that was typed
+        - submitted: Whether Enter was pressed
+        - tabbed: Whether Tab was pressed
         - error: Error message if typing failed
     """
     err = _check_browser()
     if err:
         return err
     try:
-        # Prefer ARIA label targeting over coordinates
-        if field_label:
-            page = await _get_browser().get_page()
-            # Try multiple ARIA-based selectors
-            focused = False
-            for make_locator in [
-                lambda: page.get_by_label(field_label),
-                lambda: page.get_by_role("combobox", name=field_label),
-                lambda: page.get_by_role("textbox", name=field_label),
-                lambda: page.get_by_role("searchbox", name=field_label),
-                lambda: page.get_by_placeholder(field_label),
-            ]:
-                try:
-                    loc = make_locator().first
-                    await loc.click(timeout=3000)
-                    focused = True
-                    break
-                except Exception:
-                    continue
-            if not focused:
-                return {
-                    "status": "error",
-                    "typed_text": "",
-                    "error": f"Could not find field with label '{field_label}'. "
-                    "Try using x,y coordinates instead.",
-                }
-            # Clear and type
-            await page.keyboard.press("Control+A")
-            await page.keyboard.press("Backspace")
-            await page.keyboard.type(text, delay=50)
-            # Handle autocomplete
-            await page.wait_for_timeout(600)
-            from ..browser.actions import _try_select_autocomplete
-            autocomplete = await _try_select_autocomplete(page)
-            await _update_page_state(tool_context)
-            return {
-                "status": "success",
-                "typed_text": text,
-                "field_label": field_label,
-                "autocomplete_selected": autocomplete,
-                "error": None,
-            }
+        page = await _get_browser().get_page()
+        autocomplete = False
 
-        # Fall back to coordinate-based typing
-        coords = (x, y) if x > 0 and y > 0 else None
-        result = await actions.type_text(
-            _get_browser(), text=text, coordinates=coords
+        # If there's text to type (or a field to focus), do the typing flow
+        if text or field_label or (x > 0 and y > 0):
+            # Prefer ARIA label targeting over coordinates
+            if field_label:
+                focused = False
+                for make_locator in [
+                    lambda: page.get_by_label(field_label),
+                    lambda: page.get_by_role("combobox", name=field_label),
+                    lambda: page.get_by_role("textbox", name=field_label),
+                    lambda: page.get_by_role("searchbox", name=field_label),
+                    lambda: page.get_by_placeholder(field_label),
+                ]:
+                    try:
+                        loc = make_locator().first
+                        await loc.click(timeout=3000)
+                        focused = True
+                        break
+                    except Exception:
+                        continue
+                if not focused:
+                    return {
+                        "status": "error",
+                        "typed_text": "",
+                        "submitted": False,
+                        "tabbed": False,
+                        "error": f"Could not find field with label '{field_label}'. "
+                        "Try using x,y coordinates instead.",
+                    }
+                if text:
+                    await page.keyboard.press("Control+A")
+                    await page.keyboard.press("Backspace")
+                    await page.keyboard.type(text, delay=50)
+                    await page.wait_for_timeout(600)
+                    from ..browser.actions import _try_select_autocomplete
+                    autocomplete = await _try_select_autocomplete(page)
+            elif text:
+                # Fall back to coordinate-based typing
+                coords = (x, y) if x > 0 and y > 0 else None
+                result = await actions.type_text(
+                    _get_browser(), text=text, coordinates=coords
+                )
+                if not result["success"]:
+                    return {
+                        "status": "error",
+                        "typed_text": "",
+                        "submitted": False,
+                        "tabbed": False,
+                        "error": result["error"],
+                    }
+
+        # Post-typing key presses
+        submitted = False
+        tabbed = False
+        if submit:
+            await actions.press_key(_get_browser(), "Enter")
+            import asyncio as _aio
+            await _aio.sleep(1.5)  # Wait for page update after submission
+            submitted = True
+        if tab_after:
+            await actions.press_key(_get_browser(), "Tab")
+            tabbed = True
+
+        await _update_page_state(tool_context)
+        return {
+            "status": "success",
+            "typed_text": text,
+            "field_label": field_label or None,
+            "autocomplete_selected": autocomplete,
+            "submitted": submitted,
+            "tabbed": tabbed,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "typed_text": "",
+            "submitted": False,
+            "tabbed": False,
+            "error": str(e),
+        }
+
+
+async def select_dropdown_option(
+    trigger_label: str,
+    option_text: str,
+    tool_context: ToolContext,
+) -> dict:
+    """Select an option from a dropdown menu or combobox.
+
+    Use this tool when you need to change a dropdown value (e.g., switching
+    "Round trip" to "One way" on Google Flights). This tool handles the
+    entire interaction atomically: it clicks the dropdown trigger to open
+    the menu, waits for options to appear, then clicks the desired option.
+
+    DO NOT try to click dropdown options manually with click_element_by_text
+    or find_and_click — those will fail because dropdown options are
+    hidden until the menu is opened. Always use this tool for dropdowns.
+
+    How to find the trigger_label: call get_accessibility_tree first.
+    Look for elements with role "combobox" — their name is the
+    trigger_label.
+    Example: combobox "Select your ticket type. Round trip" → trigger_label
+    is "Select your ticket type. Round trip".
+
+    Args:
+        trigger_label: The ARIA label of the dropdown trigger from the
+            accessibility tree (e.g., "Select your ticket type. Round trip").
+        option_text: The text of the option to select (e.g., "One way").
+        tool_context: ADK tool context for session state updates.
+
+    Returns:
+        A dictionary with:
+        - status: 'success' or 'error'
+        - selected_option: The option that was selected
+        - error: Error message if selection failed
+    """
+    err = _check_browser()
+    if err:
+        return err
+    try:
+        result = await actions.select_dropdown_option(
+            _get_browser(),
+            trigger_label=trigger_label,
+            option_text=option_text,
         )
         await _update_page_state(tool_context)
         return {
             "status": "success" if result["success"] else "error",
-            "typed_text": text,
-            "error": result["error"],
+            "selected_option": result.get("selected_option"),
+            "error": result.get("error"),
         }
     except Exception as e:
-        return {"status": "error", "typed_text": "", "error": str(e)}
+        return {"status": "error", "selected_option": None, "error": str(e)}
 
 
 async def scroll_down(pixels: int = 500, tool_context: ToolContext = None) -> dict:
@@ -524,3 +620,125 @@ async def get_current_page_url(tool_context: ToolContext) -> dict:
         }
     except Exception as e:
         return {"status": "error", "url": "", "title": "", "error": str(e)}
+
+
+async def fill_form(fields: str, tool_context: ToolContext) -> dict:
+    """Fill multiple form fields in one action.
+
+    Takes a JSON string mapping field labels to values. For each field it
+    uses the accessibility tree to find the matching input by ARIA label,
+    clears it, and types the new value. This is much faster and more
+    reliable than calling type_into_field repeatedly.
+
+    Use this tool when you need to fill 2+ form fields at once (e.g.,
+    first name, last name, email on a registration form, or departure and
+    arrival on a flight search). Get the field labels from the accessibility
+    tree first (use get_accessibility_tree).
+
+    The fields parameter MUST be a valid JSON string. Example:
+        '{"Full Name": "Ahmed Hassan", "Email": "ahmed@example.com"}'
+
+    For dropdowns, use select_dropdown_option separately — this tool only
+    handles text input fields.
+
+    Args:
+        fields: JSON string mapping field labels to values, e.g.
+                '{"Where from?": "Frankfurt", "Where to?": "Cairo"}'.
+        tool_context: ADK tool context for session state updates.
+
+    Returns:
+        A dictionary with:
+        - status: 'success' or 'error'
+        - filled: dict of field_label -> value for successfully filled fields
+        - failed: dict of field_label -> error message for fields that failed
+        - total: Total number of fields attempted
+        - succeeded: Number of fields successfully filled
+        - error: Top-level error message if the entire operation failed
+    """
+    import json as _json
+
+    err = _check_browser()
+    if err:
+        return err
+
+    try:
+        field_map = _json.loads(fields)
+    except (ValueError, TypeError) as e:
+        return {
+            "status": "error",
+            "filled": {},
+            "failed": {},
+            "total": 0,
+            "succeeded": 0,
+            "error": f"Invalid JSON in fields parameter: {e}",
+        }
+
+    if not isinstance(field_map, dict) or not field_map:
+        return {
+            "status": "error",
+            "filled": {},
+            "failed": {},
+            "total": 0,
+            "succeeded": 0,
+            "error": "fields must be a non-empty JSON object mapping labels to values.",
+        }
+
+    filled = {}
+    failed = {}
+
+    try:
+        page = await _get_browser().get_page()
+
+        for label, value in field_map.items():
+            value = str(value)
+            focused = False
+            for make_locator in [
+                lambda lbl=label: page.get_by_label(lbl),
+                lambda lbl=label: page.get_by_role("combobox", name=lbl),
+                lambda lbl=label: page.get_by_role("textbox", name=lbl),
+                lambda lbl=label: page.get_by_role("searchbox", name=lbl),
+                lambda lbl=label: page.get_by_placeholder(lbl),
+            ]:
+                try:
+                    loc = make_locator().first
+                    await loc.click(timeout=3000)
+                    focused = True
+                    break
+                except Exception:
+                    continue
+
+            if not focused:
+                failed[label] = f"Could not find field with label '{label}'"
+                continue
+
+            try:
+                await page.keyboard.press("Control+A")
+                await page.keyboard.press("Backspace")
+                await page.keyboard.type(value, delay=40)
+                await page.wait_for_timeout(600)
+                from ..browser.actions import _try_select_autocomplete
+                await _try_select_autocomplete(page)
+                filled[label] = value
+            except Exception as e:
+                failed[label] = str(e)
+
+        await _update_page_state(tool_context)
+
+        status = "success" if filled else "error"
+        return {
+            "status": status,
+            "filled": filled,
+            "failed": failed,
+            "total": len(field_map),
+            "succeeded": len(filled),
+            "error": None if filled else "No fields could be filled.",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "filled": filled,
+            "failed": failed,
+            "total": len(field_map),
+            "succeeded": len(filled),
+            "error": str(e),
+        }

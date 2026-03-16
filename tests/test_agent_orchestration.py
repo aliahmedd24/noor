@@ -450,22 +450,22 @@ class TestValidateNavigatorToolInputs:
 
     async def test_rejects_out_of_bounds_x(self, mock_tool, mock_tool_context):
         from noor_agent.callbacks import validate_navigator_tool_inputs
-        tool = mock_tool("click_at_coordinates")
-        result = await validate_navigator_tool_inputs(tool, {"x": 1500, "y": 400}, mock_tool_context)
+        tool = mock_tool("find_and_click")
+        result = await validate_navigator_tool_inputs(tool, {"target_description": "btn", "x": 1500, "y": 400}, mock_tool_context)
         assert result is not None
         assert result["status"] == "error"
 
     async def test_rejects_out_of_bounds_y(self, mock_tool, mock_tool_context):
         from noor_agent.callbacks import validate_navigator_tool_inputs
-        tool = mock_tool("click_at_coordinates")
-        result = await validate_navigator_tool_inputs(tool, {"x": 640, "y": 900}, mock_tool_context)
+        tool = mock_tool("find_and_click")
+        result = await validate_navigator_tool_inputs(tool, {"target_description": "btn", "x": 640, "y": 900}, mock_tool_context)
         assert result is not None
         assert result["status"] == "error"
 
     async def test_accepts_valid_coordinates(self, mock_tool, mock_tool_context):
         from noor_agent.callbacks import validate_navigator_tool_inputs
-        tool = mock_tool("click_at_coordinates")
-        result = await validate_navigator_tool_inputs(tool, {"x": 640, "y": 400}, mock_tool_context)
+        tool = mock_tool("find_and_click")
+        result = await validate_navigator_tool_inputs(tool, {"target_description": "btn", "x": 640, "y": 400}, mock_tool_context)
         assert result is None  # Proceed
 
     async def test_rejects_empty_type_text(self, mock_tool, mock_tool_context):

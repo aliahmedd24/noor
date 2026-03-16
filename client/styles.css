@@ -151,14 +151,14 @@ body {
   display: flex;
   flex-direction: column;
   padding: 1rem 1.5rem;
-  max-width: 1400px;
+  max-width: 1600px;
   width: 100%;
   margin: 0 auto;
 }
 
 .layout {
   display: grid;
-  grid-template-columns: 1fr 400px;
+  grid-template-columns: 1fr 1fr;
   gap: 1.5rem;
   flex: 1;
   min-height: 0;
@@ -511,6 +511,22 @@ body {
   padding: 3rem 1rem;
   color: var(--fg-muted);
   font-size: 0.85rem;
+}
+
+/* Live stream indicator */
+.screenshot-panel__live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--error);
+  margin-right: 0.35rem;
+  vertical-align: middle;
+  animation: pulse-dot 1.5s infinite;
+}
+
+.screenshot-panel__live-dot[hidden] {
+  display: none;
 }
 
 /* ── Toast Notifications ── */

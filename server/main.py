@@ -32,6 +32,7 @@ if sys.platform == "win32":
 
 import asyncio
 import json
+import os
 import uuid
 from contextlib import asynccontextmanager
 
@@ -51,11 +52,15 @@ from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.genai import types
 
-from noor_agent.agent import root_agent
+from noor_agent.agent import root_agent, streaming_root_agent
 from noor_agent.browser.service import get_browser_service
 from server.config import settings
+from server.persona import build_speech_config
 
 logger = structlog.get_logger(__name__)
+
+# Active screen-stream WebSocket connections (session_id → set of WebSocket)
+_screen_subscribers: dict[str, set[WebSocket]] = {}
 
 # ================================================================
 # Phase 1: Application Initialization (once at startup)
@@ -98,20 +103,51 @@ def _create_session_service():
 
 session_service = _create_session_service()
 
-# ADK Runner
+# ADK Runner — text mode (run_async)
 runner = Runner(
     app_name=APP_NAME,
     agent=root_agent,
     session_service=session_service,
 )
 
+# ADK Runner — streaming mode (run_live with native-audio model)
+streaming_runner = Runner(
+    app_name=APP_NAME,
+    agent=streaming_root_agent,
+    session_service=session_service,
+)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Yield during app lifetime; clean up browser on shutdown."""
+    """Start browser eagerly at startup; clean up on shutdown.
+
+    Playwright requires a ProactorEventLoop on Windows to create subprocesses.
+    Starting the browser here (on the main uvicorn loop) guarantees the right
+    loop type.  If we waited for the agent callback inside ``run_live()``,
+    Playwright would fail because the Live API runs on a SelectorEventLoop.
+    """
+    from noor_agent.browser.service import BrowserService, set_browser_service
+    from noor_agent.tools import browser_tools, vision_tools, page_tools
+
+    headless = os.getenv("NOOR_BROWSER_HEADLESS", "true").lower() == "true"
+    channel = os.getenv("NOOR_BROWSER_CHANNEL") or None
+    cdp_endpoint = os.getenv("NOOR_CDP_ENDPOINT") or None
+
+    service = BrowserService()
+    await service.start(headless=headless, channel=channel, cdp_endpoint=cdp_endpoint)
+    set_browser_service(service)
+
+    # Inject into tool modules so tools can use the browser immediately
+    browser_tools.set_browser_service(service)
+    vision_tools.set_browser_service(service)
+    page_tools.set_browser_service(service)
+
+    logger.info("browser_started_at_startup", strategy=service.browser.launch_strategy)
+
     yield
-    service = get_browser_service()
-    if service is not None and service.is_started:
+
+    if service.is_started:
         await service.stop()
         logger.info("browser_stopped")
 
@@ -269,12 +305,18 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     """
     ADK Bidi-streaming endpoint following the canonical bidi-demo pattern.
 
-    Protocol:
-    - Client sends text frames: JSON {"type": "text", "content": "..."} or
-      {"type": "audio", "data": "<base64>"}
-    - Client sends binary frames: raw PCM audio (16-bit, 16kHz, mono)
-    - Server sends text frames: JSON-serialized ADK Events
-    - Server sends binary frames: audio response PCM (24kHz)
+    Uses the native-audio Live API model via ``streaming_runner`` so the
+    agent speaks directly with natural voice.  Audio is sent/received as
+    raw PCM binary frames; text transcriptions ride alongside as JSON.
+
+    Protocol  (client → server):
+      - Binary frame: raw PCM audio (16-bit LE, 16 kHz, mono)
+      - Text frame:   JSON ``{"type": "text", "content": "..."}``
+                      **or** plain-text string (auto-detected)
+
+    Protocol  (server → client):
+      - Binary frame: PCM audio response from Live API (24 kHz)
+      - Text frame:   JSON event (transcript, tool activity, screenshot, …)
     """
     await websocket.accept()
 
@@ -282,10 +324,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     # Phase 2: Session Initialization (per WebSocket connection)
     # ============================================================
 
-    # RunConfig for streaming with native audio
     run_config = RunConfig(
         streaming_mode=StreamingMode.BIDI,
         response_modalities=["AUDIO"],
+        speech_config=build_speech_config(),
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
         session_resumption=types.SessionResumptionConfig(),
@@ -304,7 +346,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             session_id=session_id,
         )
 
-    # Create LiveRequestQueue (one per session, never reuse)
+    # One LiveRequestQueue per session — never reuse
     live_request_queue = LiveRequestQueue()
 
     logger.info(
@@ -318,7 +360,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     # ============================================================
 
     async def upstream_task():
-        """Receive messages from WebSocket client -> forward to LiveRequestQueue."""
+        """Receive messages from WebSocket client → forward to LiveRequestQueue."""
         try:
             while True:
                 data = await websocket.receive()
@@ -332,55 +374,93 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     live_request_queue.send_realtime(audio_blob)
 
                 elif "text" in data:
-                    msg = json.loads(data["text"])
+                    raw = data["text"]
+                    try:
+                        msg = json.loads(raw)
+                    except (json.JSONDecodeError, ValueError):
+                        msg = None
 
-                    if msg.get("type") == "text":
-                        # Text message (fallback input)
-                        content = types.Content(
-                            parts=[types.Part(text=msg["content"])]
-                        )
-                        live_request_queue.send_content(content)
+                    if isinstance(msg, dict):
+                        if msg.get("type") == "text":
+                            content = types.Content(
+                                parts=[types.Part(text=msg["content"])]
+                            )
+                            live_request_queue.send_content(content)
+                        elif msg.get("type") in ("settings", "ping"):
+                            pass  # Ignore control messages
+                    else:
+                        # Plain text string (fallback / typed input)
+                        if raw.strip():
+                            content = types.Content(
+                                parts=[types.Part(text=raw)]
+                            )
+                            live_request_queue.send_content(content)
 
         except WebSocketDisconnect:
             pass  # Client disconnected — handled in finally
 
     async def downstream_task():
-        """Receive ADK Events from run_live() -> forward to WebSocket client."""
+        """Receive ADK events from run_live() → forward audio + text to client."""
         try:
-            async for event in runner.run_live(
+            logger.info("downstream_starting_run_live")
+            async for event in streaming_runner.run_live(
                 user_id=user_id,
                 session_id=session_id,
                 live_request_queue=live_request_queue,
                 run_config=run_config,
             ):
-                # Serialize event and send to client
-                event_json = event.model_dump_json(exclude_none=True, by_alias=True)
-                await websocket.send_text(event_json)
+                logger.info(
+                    "downstream_event",
+                    has_content=bool(event.content),
+                    author=getattr(event, "author", None),
+                )
+                # ── Extract audio and text from event parts ──
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        # Audio data → binary WebSocket frame
+                        inline = getattr(part, "inline_data", None)
+                        if inline and getattr(inline, "data", None):
+                            mime = getattr(inline, "mime_type", "") or ""
+                            if "audio" in mime:
+                                await websocket.send_bytes(inline.data)
 
-                # Drain UI events (tool_start, tool_end, screenshot)
-                try:
-                    sess = await session_service.get_session(
-                        app_name=APP_NAME, user_id=user_id, session_id=session_id,
-                    )
-                    if sess:
-                        ui_events = sess.state.get("_ui_events", [])
-                        if ui_events:
-                            for ui_event in ui_events:
-                                await websocket.send_text(json.dumps(ui_event))
-                            sess.state["_ui_events"] = []
-                except Exception:
-                    pass
+                        # Text (transcription or model response) → JSON frame
+                        text = getattr(part, "text", None)
+                        if text:
+                            author = getattr(event, "author", "noor") or "noor"
+                            await websocket.send_text(json.dumps({
+                                "type": "response",
+                                "text": text,
+                                "agent": author,
+                            }))
 
+                # ── Drain UI events (tool_start, tool_end, screenshot) ──
+                await _drain_ui_events(websocket, user_id, session_id)
+
+            logger.info("downstream_run_live_finished")
         except WebSocketDisconnect:
-            pass
+            logger.info("downstream_ws_disconnect")
+        except Exception as e:
+            logger.error("downstream_error", error=str(e), error_type=type(e).__name__)
+            raise
 
     # Run both tasks concurrently
     try:
-        await asyncio.gather(
+        results = await asyncio.gather(
             upstream_task(),
             downstream_task(),
             return_exceptions=True,
         )
+        # Log any exceptions that were swallowed by gather
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                task_name = "upstream" if i == 0 else "downstream"
+                logger.error(
+                    "gather_task_exception",
+                    task=task_name,
+                    error=str(result),
+                    error_type=type(result).__name__,
+                )
     finally:
         # ============================================================
         # Phase 4: Terminate Live API session
@@ -521,3 +601,65 @@ async def text_endpoint(websocket: WebSocket, user_id: str, session_id: str):
             await websocket.send_text(json.dumps({"type": "error", "error": str(e)}))
         except Exception:
             pass
+
+
+# ================================================================
+# Live Screen Stream (JPEG screenshots over WebSocket)
+# ================================================================
+
+SCREEN_FPS = 2          # Target frames per second
+SCREEN_QUALITY = 50     # JPEG quality (1-100)
+SCREEN_INTERVAL = 1.0 / SCREEN_FPS
+
+
+@app.websocket("/ws-screen/{session_id}")
+async def screen_stream(websocket: WebSocket, session_id: str):
+    """Stream live JPEG screenshots of the browser at ~2 FPS.
+
+    Each frame is sent as a binary WebSocket message (raw JPEG bytes).
+    The client renders them in an <img> tag via Blob URL.
+
+    Falls back gracefully: if the browser isn't started yet, waits
+    and retries every second until it is, or until the client disconnects.
+    """
+    await websocket.accept()
+
+    # Register subscriber
+    if session_id not in _screen_subscribers:
+        _screen_subscribers[session_id] = set()
+    _screen_subscribers[session_id].add(websocket)
+
+    logger.info("screen_stream_started", session_id=session_id)
+
+    try:
+        while True:
+            service = get_browser_service()
+            if service is None or not service.is_started:
+                await asyncio.sleep(1.0)
+                continue
+
+            try:
+                jpeg_bytes = await service.browser.take_screenshot(
+                    full_page=False, quality=SCREEN_QUALITY,
+                )
+                if jpeg_bytes:
+                    await websocket.send_bytes(jpeg_bytes)
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                err_str = str(e).lower()
+                if "close" in err_str or "disconnect" in err_str or "1000" in err_str:
+                    break
+                logger.debug("screen_stream_frame_error", error=str(e))
+
+            await asyncio.sleep(SCREEN_INTERVAL)
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.debug("screen_stream_error", error=str(e))
+    finally:
+        _screen_subscribers.get(session_id, set()).discard(websocket)
+        if session_id in _screen_subscribers and not _screen_subscribers[session_id]:
+            del _screen_subscribers[session_id]
+        logger.info("screen_stream_ended", session_id=session_id)

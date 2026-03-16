@@ -20,6 +20,7 @@ from google.adk.tools import ToolContext
 logger = structlog.get_logger(__name__)
 
 _initialized = False
+_last_auto_dismiss_time = 0.0  # Throttle cookie/modal auto-dismissal
 
 
 def _push_ui_event(state: dict, event: dict) -> None:
@@ -61,19 +62,30 @@ async def ensure_tools_initialized(callback_context: CallbackContext) -> None:
 
     global _initialized
     if _initialized:
+        # Auto-dismiss cookie banners and modals on every turn
+        await _auto_dismiss_overlays(callback_context)
         return None
 
+    # Check if browser was already started by the server lifespan handler
+    from .browser.service import BrowserService, get_browser_service, set_browser_service
+    service = get_browser_service()
+    if service is not None and service.is_started:
+        _initialized = True
+        logger.info(
+            "tool_dependencies_already_initialized",
+            browser_strategy=service.browser.launch_strategy,
+        )
+        return None
+
+    # Fallback: start browser here (for adk run / adk web / tests)
     logger.info("initializing_tool_dependencies")
 
-    from .browser.service import BrowserService, set_browser_service
     from .tools import browser_tools, vision_tools, page_tools
 
-    # Read config from environment variables
     headless = os.getenv("NOOR_BROWSER_HEADLESS", "true").lower() == "true"
     channel = os.getenv("NOOR_BROWSER_CHANNEL") or None
     cdp_endpoint = os.getenv("NOOR_CDP_ENDPOINT") or None
 
-    # Start browser service
     service = BrowserService()
     await service.start(
         headless=headless,
@@ -81,10 +93,7 @@ async def ensure_tools_initialized(callback_context: CallbackContext) -> None:
         cdp_endpoint=cdp_endpoint,
     )
 
-    # Set module-level singleton
     set_browser_service(service)
-
-    # Inject into tool modules
     browser_tools.set_browser_service(service)
     vision_tools.set_browser_service(service)
     page_tools.set_browser_service(service)
@@ -95,6 +104,85 @@ async def ensure_tools_initialized(callback_context: CallbackContext) -> None:
         browser_strategy=service.browser.launch_strategy,
     )
     return None
+
+
+async def _auto_dismiss_overlays(callback_context: CallbackContext) -> None:
+    """Dismiss residual modal dialogs that the JS init-script missed.
+
+    Cookie banners are handled automatically by a JS init-script injected
+    via ``apply_stealth()`` (runs on every page load). This callback is a
+    fallback for non-cookie modals (newsletter popups, login prompts, etc.)
+    that might block interaction.
+
+    Throttled to at most once per 8 seconds to avoid overhead.
+    """
+    global _last_auto_dismiss_time
+    now = time.monotonic()
+    if now - _last_auto_dismiss_time < 8.0:
+        return
+    _last_auto_dismiss_time = now
+
+    try:
+        from .browser.service import get_browser_service
+        service = get_browser_service()
+        if service is None or not service.is_started:
+            return
+
+        page = await service.browser.get_page()
+        url = page.url
+        if not url or url == "about:blank":
+            return
+
+        # Restore scrolling if a consent manager locked the body
+        try:
+            await page.evaluate("""
+                () => {
+                    document.documentElement.style.overflow = '';
+                    document.body.style.overflow = '';
+                }
+            """)
+        except Exception:
+            pass
+
+        # Dismiss non-cookie modals (newsletter, login, promo popups)
+        modal_selectors = [
+            '[role="dialog"] button[aria-label*="lose"]',
+            '[role="dialog"] button[aria-label*="ismiss"]',
+            '[aria-modal="true"] button[aria-label*="lose"]',
+            '.modal button.close',
+            '.modal [data-dismiss="modal"]',
+            'dialog button:has-text("Close")',
+            'dialog button:has-text("No thanks")',
+            '[role="dialog"] button:has-text("No thanks")',
+        ]
+        for sel in modal_selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.is_visible(timeout=300):
+                    await loc.click()
+                    await page.wait_for_timeout(500)
+                    _push_ui_event(callback_context.state, {
+                        "type": "status",
+                        "message": "Dismissed a popup dialog.",
+                    })
+                    logger.info("auto_dismissed_modal", selector=sel)
+                    break
+            except Exception:
+                continue
+
+        # Escape fallback for stubborn dialogs
+        try:
+            has_dialog = await page.evaluate("""
+                () => !!document.querySelector('[role="dialog"]:not([hidden]), [aria-modal="true"]:not([hidden])')
+            """)
+            if has_dialog:
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(300)
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.debug("auto_dismiss_failed", error=str(e))
 
 
 def _ensure_state_defaults(callback_context: CallbackContext) -> None:
@@ -147,36 +235,39 @@ async def validate_navigator_tool_inputs(
             }
         url = url.strip()
         if not url.startswith(("http://", "https://")):
-            # Auto-fix: prepend https://
             args["url"] = f"https://{url}"
             logger.info("auto_prepended_https", original=url, fixed=args["url"])
 
-    # Validate coordinates for click_at_coordinates
-    if tool_name == "click_at_coordinates":
+    # Validate coordinates for find_and_click (coordinate mode)
+    if tool_name == "find_and_click":
         x = args.get("x", 0)
         y = args.get("y", 0)
-        if not (0 <= x <= 1280):
-            return {
-                "status": "error",
-                "error": f"x-coordinate {x} is outside the viewport (0–1280). "
-                "Use analyze_current_page to get correct element coordinates.",
-            }
-        if not (0 <= y <= 800):
-            return {
-                "status": "error",
-                "error": f"y-coordinate {y} is outside the viewport (0–800). "
-                "Use analyze_current_page to get correct element coordinates.",
-            }
+        if x > 0 or y > 0:
+            if not (0 <= x <= 1280):
+                return {
+                    "status": "error",
+                    "error": f"x-coordinate {x} is outside the viewport (0-1280). "
+                    "Use analyze_current_page to get correct element coordinates.",
+                }
+            if not (0 <= y <= 800):
+                return {
+                    "status": "error",
+                    "error": f"y-coordinate {y} is outside the viewport (0-800). "
+                    "Use analyze_current_page to get correct element coordinates.",
+                }
 
-    # Validate type_into_field text
+    # Validate type_into_field
     if tool_name == "type_into_field":
         text = args.get("text", "")
-        if not text:
+        submit = args.get("submit", False)
+        tab_after = args.get("tab_after", False)
+        # Allow empty text only if submit or tab_after is set
+        if not text and not submit and not tab_after:
             return {
                 "status": "error",
-                "error": "Cannot type empty text. Provide the text to type.",
+                "error": "Cannot type empty text. Provide text, or set submit=True "
+                "to press Enter, or tab_after=True to press Tab.",
             }
-        # Validate optional coordinates
         x = args.get("x", 0)
         y = args.get("y", 0)
         if (x != 0 or y != 0) and (not (0 <= x <= 1280) or not (0 <= y <= 800)):
@@ -184,6 +275,29 @@ async def validate_navigator_tool_inputs(
                 "status": "error",
                 "error": f"Coordinates ({x}, {y}) are outside the viewport. "
                 "Use 0,0 to skip coordinate-based focus, or provide valid coordinates.",
+            }
+
+    # Validate fill_form JSON
+    if tool_name == "fill_form":
+        import json as _json
+        fields = args.get("fields", "")
+        if not fields:
+            return {
+                "status": "error",
+                "error": "fields parameter is required. Pass a JSON string like "
+                '\'{"Name": "John", "Email": "john@example.com"}\'.',
+            }
+        try:
+            parsed = _json.loads(fields)
+            if not isinstance(parsed, dict):
+                return {
+                    "status": "error",
+                    "error": "fields must be a JSON object (dict), not " + type(parsed).__name__,
+                }
+        except (ValueError, TypeError) as e:
+            return {
+                "status": "error",
+                "error": f"fields is not valid JSON: {e}",
             }
 
     # Validate click_element_by_text

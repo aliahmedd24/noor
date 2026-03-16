@@ -92,21 +92,16 @@ class ScreenAnalyzer:
     VISION_MODEL = "gemini-3.1-pro-preview"
 
     def __init__(self) -> None:
-        """Initialize the GenAI client.
+        """Initialize the Vertex AI GenAI client.
 
-        Reads configuration from environment variables.
+        Reads project and location from environment variables.
+        Always uses Vertex AI — AI Studio is not supported.
         """
-        use_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "FALSE").upper() == "TRUE"
-        if use_vertex:
-            self.client = genai.Client(
-                vertexai=True,
-                project=os.getenv("GOOGLE_CLOUD_PROJECT", ""),
-                location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
-            )
-        else:
-            self.client = genai.Client(
-                api_key=os.getenv("GOOGLE_API_KEY", ""),
-            )
+        self.client = genai.Client(
+            vertexai=True,
+            project=os.getenv("GOOGLE_CLOUD_PROJECT", ""),
+            location=os.getenv("GOOGLE_CLOUD_LOCATION", "global"),
+        )
 
     async def analyze_screenshot(
         self,

@@ -8,90 +8,139 @@ Noor (Arabic for "Light") gives blind users independent access to the web throug
 
 ---
 
-## Architecture
+## How It Works
 
 ```
-User (Voice/Text)
-    |
-    v
-Accessible Client UI (HTML/JS, ES Modules, WCAG 2.1 AA)
-    |  WebSocket (bidi-streaming)
-    v
-FastAPI Server (Cloud Run, CORS, GZip, Security Headers)
-    |
-    v
-NoorOrchestrator (ADK root_agent, BuiltInPlanner)
-    |-- ScreenVisionAgent    (Gemini vision — screenshot analysis)
-    |-- NavigatorAgent       (Playwright — browser automation)
-    |-- PageSummarizerAgent  (Content extraction + summarization)
-    |
-    +-- Gemini Live API (bidirectional streaming audio)
-    +-- Playwright Chromium (headless browser, 1280x800 viewport)
-    +-- Vertex AI / AI Studio (model serving)
+                          +-----------------------+
+                          |     User (Voice)      |
+                          +-----------+-----------+
+                                      |
+                           WebSocket (bidi audio)
+                                      |
+                          +-----------v-----------+
+                          |  Accessible Client UI |
+                          |  (HTML/JS, WCAG 2.1)  |
+                          +-----------+-----------+
+                                      |
+                       WebSocket (PCM audio + JSON)
+                                      |
+                          +-----------v-----------+
+                          |    FastAPI Server      |
+                          |  (Cloud Run, 8080)     |
+                          +-----------+-----------+
+                                      |
+                    +-----------------+-----------------+
+                    |                                   |
+          +---------v----------+             +----------v----------+
+          |   Text Runner      |             |  Streaming Runner   |
+          | (run_async)        |             | (run_live)          |
+          +---------+----------+             +----------+----------+
+                    |                                   |
+          +---------v----------+             +----------v----------+
+          |  NoorTaskLoop      |             |  NoorOrchestrator   |
+          |  (LoopAgent x10)   |             |  (LlmAgent direct)  |
+          +--------+-----------+             +----------+----------+
+                   |                                    |
+          +--------v-----------+                        |
+          |  NoorOrchestrator  |<-----------------------+
+          |  (15 tools)        |
+          +---+------+-----+--+
+              |      |     |
+     +--------+  +---+  +--+--------+
+     |           |       |           |
+  Gemini    Playwright  Gemini     ADK
+  Vision    (Edge/     Live API   Session
+  (3.1 Pro) Chromium)  (native    State
+                        audio)
 ```
 
-**4 ADK agents**, each with a single responsibility:
-- **Orchestrator** — routes user intent, plans multi-step actions, narrates results
-- **Vision** — captures and analyzes screenshots with Gemini multimodal
-- **Navigator** — clicks, types, scrolls, navigates via Playwright
-- **Summarizer** — extracts and summarizes page content for audio delivery
-
-Agents communicate via **structured session state** (`output_key` + `output_schema` with Pydantic models).
+**What Noor does:**
+1. User speaks naturally ("Find me flights from Cairo to Berlin")
+2. Noor understands intent via Gemini Live API (real-time bidirectional audio)
+3. Opens a browser, navigates to the right website
+4. Reads the page using accessibility tree + Gemini vision
+5. Fills forms, clicks buttons, scrolls, reads results
+6. Narrates every action aloud so the user stays in control
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Agent Framework | Google ADK (`google-adk`) |
-| LLM — Vision/Language | Gemini 2.5 Flash (Vertex AI) |
-| LLM — Streaming Voice | Gemini Live API (ADK Streaming) |
-| Browser | Playwright (async Python, headless Chromium) |
-| Server | FastAPI + WebSocket |
-| Frontend | Vanilla HTML/JS ES Modules (accessibility-first) |
-| Compute | Google Cloud Run |
-| AI Platform | Vertex AI |
-| Database | Firestore |
-| IaC | Terraform |
-| CI/CD | GitHub Actions |
-| Observability | Cloud Trace + Cloud Logging |
+| Layer | Technology | Notes |
+|-------|-----------|-------|
+| Agent Framework | Google ADK v1.26 | Multi-agent orchestration, streaming, eval |
+| LLM — Text/Vision | Gemini 3.1 Pro (Vertex AI) | Page analysis, task planning, tool use |
+| LLM — Voice | Gemini Live API (native audio) | Real-time bidirectional speech |
+| Browser | Playwright (async Python) | Headless Edge/Chromium, 1280x800 viewport |
+| Server | FastAPI | WebSocket bidi-streaming + REST |
+| Frontend | Vanilla HTML/JS | Accessibility-first, zero build step |
+| Compute | Google Cloud Run | Containerized deployment |
+| AI Platform | Vertex AI | Model serving (global + us-central1) |
+| Database | Firestore | Session history, user preferences |
+| IaC | Terraform | Firestore, IAM, Cloud Run, Artifact Registry |
+| CI/CD | GitHub Actions | Lint, test, deploy on tag push |
+| Observability | Cloud Trace + Logging | Via `--trace_to_cloud` |
+
+---
+
+## Agent Architecture
+
+Noor uses a **single orchestrator with 15 tools** rather than a multi-agent hierarchy. This gives the LLM direct access to all capabilities without routing overhead.
+
+```
+NoorTaskLoop (LoopAgent, max_iterations=10)            [text mode]
+└── NoorOrchestrator (LlmAgent, gemini-3.1-pro, BuiltInPlanner)
+    ├── Navigation:  navigate_to_url, click_element_by_text, find_and_click,
+    │                type_into_field, select_dropdown_option, fill_form,
+    │                scroll_down, scroll_up, go_back_in_browser
+    ├── Perception:  analyze_current_page, get_accessibility_tree,
+    │                extract_page_text, read_page_aloud
+    └── Control:     explain_what_happened, task_complete
+
+NoorOrchestrator (LlmAgent, gemini-live-native-audio)  [voice mode]
+└── Same 15 tools, no LoopAgent (Live API doesn't support it),
+    no planner (native-audio models don't support thinking)
+```
+
+**Two-layer perception:**
+- **Layer 1 — Accessibility Tree** (fast, <1s): `get_accessibility_tree` returns ARIA roles, labels, values for every interactive element. This is the primary sense.
+- **Layer 2 — Vision Analysis** (slow, ~30s): `analyze_current_page` takes a screenshot and uses Gemini multimodal to describe visual layout, images, and spatial relationships.
+
+**Dual-model architecture:**
+- Text model (`gemini-3.1-pro`) runs on `global` endpoint
+- Live API model (`gemini-live-2.5-flash-native-audio`) requires `us-central1`
+- A custom `_RegionalLiveGemini` subclass routes Live API calls to the regional endpoint
 
 ---
 
 ## Frontend
 
-The client is a **zero-dependency vanilla JS** application built with ES modules. No build step required.
+Zero-dependency vanilla JS with ES modules. No build step.
 
-**Features:**
-- **Chat-bubble transcript** — user messages right-aligned, Noor left-aligned, tool activity spinners
-- **Voice interaction** — pulsing mic button with real-time waveform visualization
-- **Live screenshot panel** — shows what Noor sees with bounding-box annotation overlays
-- **Onboarding overlay** — first-visit guide with example prompt chips
-- **Settings panel** — voice speed, text size, dark/light theme (persisted via localStorage)
-- **Toast notifications** — connection status, errors with retry actions
-- **WCAG 2.1 AA** — skip-nav, landmark regions, ARIA live regions, focus management, keyboard shortcuts, `prefers-reduced-motion` support
-- **Responsive** — desktop two-column layout, mobile single-column with collapsible screenshot panel
+- **Chat-bubble transcript** — user and Noor messages, tool activity spinners
+- **Voice interaction** — pulsing mic button with waveform visualization
+- **Live browser feed** — real-time 2 FPS JPEG stream of what the browser sees
+- **Onboarding overlay** — first-visit guide with example prompts
+- **Settings** — voice speed, text size, dark/light theme (localStorage)
+- **WCAG 2.1 AA** — skip-nav, landmark regions, ARIA live regions, focus management, keyboard shortcuts, `prefers-reduced-motion`
+- **Responsive** — desktop two-column (chat + browser), mobile single-column
 
-**Keyboard shortcuts:**
-- `Space` — toggle microphone (when no input is focused)
-- `Escape` — close modals/settings
-- `Tab` — navigate all interactive elements
+**Keyboard shortcuts:** `Space` toggle mic | `Escape` close modals | `Tab` navigate
 
 ---
 
-## Quick Start (Local Development)
+## Quick Start
 
 ### Prerequisites
 
 - Python 3.11+
-- A Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey)
+- Google Cloud project with Vertex AI enabled
 - Microsoft Edge or Google Chrome (Windows/macOS) OR Docker
 
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/noor.git
+git clone https://github.com/AibrahimEA/noor.git
 cd noor
 pip install -e ".[dev]"
 ```
@@ -102,77 +151,52 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-Edit `.env` and set:
+Edit `.env`:
+```env
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=global
+GOOGLE_GENAI_USE_VERTEXAI=TRUE
 ```
-GOOGLE_API_KEY=your-gemini-api-key
-GOOGLE_GENAI_USE_VERTEXAI=FALSE
+
+Authenticate:
+```bash
+gcloud auth application-default login
 ```
 
-**Windows users:** Set `NOOR_BROWSER_CHANNEL=msedge` (already set in `.env.example`). Do **NOT** run `playwright install chromium` on Windows.
+**Windows:** Set `NOOR_BROWSER_CHANNEL=msedge`. Do **not** run `playwright install chromium`.
+**Linux/Docker:** Leave `NOOR_BROWSER_CHANNEL` empty. Run `playwright install chromium --with-deps`.
 
-**Linux/macOS/Docker:** Leave `NOOR_BROWSER_CHANNEL` empty and run `playwright install chromium --with-deps`.
-
-### 3. Run with ADK CLI (text mode)
+### 3. Run
 
 ```bash
+# ADK terminal (text)
 adk run noor_agent
-```
 
-### 4. Run with ADK Web UI
-
-```bash
-# Text mode
-adk web noor_agent
-
-# Voice + video streaming
+# ADK web UI (text + voice)
 adk web noor_agent --streaming
-```
 
-### 5. Run with custom server (full UI)
-
-```bash
+# Custom server (full UI with live browser feed)
 uvicorn server.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
-Open http://localhost:8080 in your browser.
+Open http://localhost:8080
 
 ---
 
-## Running Tests
-
-### Unit tests (no API key needed)
+## Testing
 
 ```bash
+# Unit tests (no API key needed)
 pytest tests/test_agent_orchestration.py -v
-```
 
-Tests agent hierarchy, definitions, callbacks, tool wiring, prompts, and state helpers.
-
-### Integration tests (requires API key + browser)
-
-```bash
+# Integration tests (requires API key + browser)
 pytest tests/test_agents.py -v
-```
 
-Tests full agent behavior: greeting, navigation, vision, search flows, error handling.
-
-### ADK evaluation
-
-```bash
-# Via CLI
+# ADK evaluation (tool trajectory matching)
 adk eval noor_agent tests/eval/navigation_eval.test.json \
-    --config_file_path tests/eval/test_config.json \
-    --print_detailed_results
+    --config_file_path tests/eval/test_config.json
 
-# Via pytest
-pytest tests/test_eval.py -v
-```
-
-Evaluates tool trajectory correctness (IN_ORDER matching, threshold 0.8) and response quality.
-
-### All tests
-
-```bash
+# All tests
 pytest tests/ -v
 ```
 
@@ -183,23 +207,18 @@ pytest tests/ -v
 ```bash
 docker build -t noor .
 docker run -p 8080:8080 --env-file .env noor
+
+# Or with docker-compose
+docker compose up
 ```
 
-The Dockerfile uses a **multi-stage build** with a non-root user and `HEALTHCHECK`. Playwright Chromium is installed only inside the container — never on Windows dev machines.
+Multi-stage build, non-root user, `HEALTHCHECK`. Playwright Chromium installed only inside the container.
 
 ---
 
-## GCP Deployment
+## Deployment
 
-### Pre-flight check
-
-```bash
-./scripts/preflight.sh
-```
-
-Validates environment variables, CLI tools, GCP authentication, API enablement, and Docker availability.
-
-### Option A: Automated deploy script (recommended)
+### Option A: Automated deploy (recommended)
 
 ```bash
 export GOOGLE_CLOUD_PROJECT=your-project-id
@@ -207,9 +226,7 @@ export GOOGLE_CLOUD_LOCATION=us-central1
 ./scripts/deploy.sh
 ```
 
-Runs pre-flight checks, tries ADK CLI deploy, falls back to `gcloud run deploy` if needed.
-
-### Option B: ADK CLI direct
+### Option B: ADK CLI
 
 ```bash
 adk deploy cloud_run \
@@ -225,19 +242,11 @@ adk deploy cloud_run \
 
 ```bash
 gcloud run deploy noor-agent \
-    --source=. \
-    --region=us-central1 \
+    --source=. --region=us-central1 \
     --allow-unauthenticated \
     --memory=2Gi --cpu=2 \
-    --min-instances=1 \
-    --timeout=300 \
     --session-affinity
 ```
-
-### CI/CD (GitHub Actions)
-
-- **CI** (`.github/workflows/ci.yml`): Runs on push/PR to `main`. Lints with ruff, runs pytest, verifies Docker build.
-- **Deploy** (`.github/workflows/deploy.yml`): Runs on tag push (`v*`) or manual dispatch. Authenticates via Workload Identity Federation, pushes to Artifact Registry, deploys to Cloud Run with `--min-instances=1` (no cold starts for demo).
 
 ### Infrastructure (Terraform)
 
@@ -245,7 +254,7 @@ gcloud run deploy noor-agent \
 cd infra && terraform init && terraform apply
 ```
 
-Provisions: Firestore, IAM, Cloud Run service, Artifact Registry, API enablement, monitoring.
+Provisions Firestore, IAM, Cloud Run, Artifact Registry, and API enablement.
 
 ---
 
@@ -253,110 +262,93 @@ Provisions: Firestore, IAM, Cloud Run service, Artifact Registry, API enablement
 
 ```
 noor/
-├── noor_agent/              # ADK agent package (adk run/web/deploy target)
-│   ├── __init__.py          # from . import agent
-│   ├── agent.py             # root_agent + App with compaction/resumability
-│   ├── prompts.py           # All instruction strings (extracted)
-│   ├── orchestrator.py      # NoorOrchestrator (root, BuiltInPlanner)
-│   ├── vision_agent.py      # ScreenVisionAgent
-│   ├── navigator_agent.py   # NavigatorAgent
-│   ├── summarizer_agent.py  # PageSummarizerAgent
-│   ├── schemas.py           # Pydantic output schemas
-│   ├── callbacks.py         # Agent lifecycle callbacks + UI event emission
-│   ├── plugins.py           # ADK plugins (ReflectAndRetry, Logging)
-│   ├── state_helpers.py     # State minification for instruction injection
-│   ├── tools/               # ADK tool functions
-│   │   ├── browser_tools.py # navigate, click, type, scroll, screenshot
-│   │   ├── vision_tools.py  # analyze_current_page, describe_page_aloud
-│   │   ├── page_tools.py    # extract_page_text, get_page_metadata
-│   │   └── state_tools.py   # get_state_detail
-│   ├── browser/             # Playwright automation engine
-│   │   ├── manager.py       # BrowserManager (3-strategy launch)
-│   │   ├── actions.py       # Click, type, scroll, navigate, wait
-│   │   ├── screenshot.py    # Screenshot + coordinate grid overlay
-│   │   └── service.py       # BrowserService (DI singleton)
-│   └── vision/              # Gemini multimodal pipeline
-│       ├── analyzer.py      # ScreenAnalyzer (Gemini vision calls)
-│       └── models.py        # SceneDescription, PageElement, BoundingBox
-├── server/                  # FastAPI server (WebSocket streaming)
-│   ├── main.py              # App + bidi-streaming + CORS + security headers
-│   ├── config.py            # Pydantic Settings
-│   └── persona.py           # Noor voice configuration
-├── client/                  # Frontend (accessibility-first, zero-dependency)
-│   ├── index.html           # Semantic HTML with skip-nav + landmark regions
-│   ├── app.js               # Main entry: WebSocket, components, keyboard shortcuts
-│   ├── styles.css            # Design system: dark/light themes, responsive, a11y
-│   ├── components/
-│   │   ├── transcript.js    # Chat-bubble conversation panel
-│   │   ├── mic-button.js    # Mic toggle + pulse + waveform
-│   │   ├── screenshot.js    # Live screenshot panel + annotations
-│   │   ├── toast.js         # Toast notifications
-│   │   ├── onboarding.js    # First-visit overlay
-│   │   └── settings.js      # Preferences panel
-│   └── assets/
-│       └── noor-logo.svg    # Branding
+├── noor_agent/                 # ADK agent package
+│   ├── __init__.py             # ADK discovery (from . import agent)
+│   ├── agent.py                # root_agent, streaming_root_agent, App
+│   ├── orchestrator.py         # NoorOrchestrator (LlmAgent + 15 tools)
+│   ├── prompts.py              # All instruction strings
+│   ├── schemas.py              # Pydantic output schemas
+│   ├── callbacks.py            # Lifecycle callbacks + overlay dismissal
+│   ├── plugins.py              # ADK plugins
+│   ├── state_helpers.py        # State minification
+│   ├── vision_agent.py         # ScreenVisionAgent (sub-agent)
+│   ├── navigator_agent.py      # NavigatorAgent (sub-agent)
+│   ├── summarizer_agent.py     # PageSummarizerAgent (sub-agent)
+│   ├── tools/
+│   │   ├── browser_tools.py    # navigate, click, type, scroll, fill_form
+│   │   ├── vision_tools.py     # analyze_current_page, find_and_click
+│   │   ├── page_tools.py       # get_accessibility_tree, extract_page_text
+│   │   ├── state_tools.py      # task_complete, explain_what_happened
+│   │   └── user_tools.py       # User preferences
+│   ├── browser/
+│   │   ├── manager.py          # BrowserManager (3-strategy launch)
+│   │   ├── actions.py          # Click, type, scroll, navigate
+│   │   ├── screenshot.py       # Screenshot + coordinate grid
+│   │   ├── service.py          # BrowserService singleton
+│   │   └── stealth.py          # Anti-detection + cookie auto-dismiss
+│   └── vision/
+│       ├── analyzer.py         # Gemini multimodal vision calls
+│       └── models.py           # SceneDescription, PageElement
+├── server/
+│   ├── main.py                 # FastAPI + bidi-streaming + screen stream
+│   ├── config.py               # Pydantic Settings
+│   └── persona.py              # Voice configuration
+├── client/
+│   ├── index.html              # Accessible semantic HTML
+│   ├── app.js                  # WebSocket, components, keyboard shortcuts
+│   ├── audio.js                # AudioWorklet for PCM capture
+│   ├── styles.css              # Dark/light themes, responsive
+│   ├── components/             # transcript, mic-button, screenshot, etc.
+│   └── assets/noor-logo.svg
 ├── tests/
-│   ├── conftest.py          # InMemoryRunner fixtures, browser fixture
-│   ├── test_agent_orchestration.py  # Agent hierarchy + definition tests
-│   ├── test_agents.py       # Agent behavior tests (InMemoryRunner)
-│   ├── test_eval.py         # ADK AgentEvaluator wrapper
-│   └── eval/
-│       ├── navigation_eval.test.json    # Navigation eval cases
-│       ├── summarization_eval.test.json # Summarization eval cases
-│       └── test_config.json             # Eval criteria + thresholds
-├── infra/                   # Terraform
-│   ├── main.tf              # Provider + API enablement
-│   ├── variables.tf         # project_id, region
-│   ├── iam.tf               # Service account + IAM bindings
-│   ├── firestore.tf         # Firestore database
-│   ├── artifact_registry.tf # Docker image registry
-│   ├── cloud_run.tf         # Cloud Run service + public access
-│   └── outputs.tf           # service_account, cloud_run_url, registry
-├── scripts/
-│   ├── preflight.sh         # Pre-deployment validation
-│   ├── deploy.sh            # ADK deploy with fallback
-│   └── setup_gcp.sh         # GCP API enablement
-├── .github/workflows/
-│   ├── ci.yml               # Lint + test + Docker build
-│   └── deploy.yml           # Build, push, deploy to Cloud Run
-├── CLAUDE.md                # Project governance
-├── pyproject.toml           # Python project config
-├── Dockerfile               # Multi-stage, non-root, HEALTHCHECK
-├── .dockerignore            # Exclude tests, docs, .env
-├── .env.example             # Environment variable template
-└── README.md                # This file
+│   ├── conftest.py             # Fixtures (InMemoryRunner, browser)
+│   ├── test_agent_orchestration.py
+│   ├── test_agents.py
+│   ├── test_eval.py
+│   └── eval/                   # ADK .test.json evaluation cases
+├── infra/                      # Terraform (Firestore, IAM, Cloud Run)
+├── scripts/                    # deploy.sh, setup_gcp.sh, preflight.sh
+├── .github/workflows/          # CI + deploy
+├── Dockerfile                  # Multi-stage, non-root, HEALTHCHECK
+├── docker-compose.yml
+├── pyproject.toml
+├── requirements.txt
+└── CLAUDE.md                   # Project governance (for AI assistants)
 ```
 
 ---
 
 ## Demo Scenarios
 
-### 1. Flight Search
+### 1. Flight Search (~90s)
 > "Find me cheap flights from Cairo to Berlin for next Friday."
 
-Noor navigates to Google Flights, fills in the form, reads results with prices and times.
+Noor navigates to Google Flights, reads the accessibility tree to find form fields, fills departure/destination/date, searches, and reads results with prices and times.
 
-### 2. News Reading
+### 2. News Reading (~60s)
 > "Go to BBC News and read me the top story."
 
-Noor opens BBC, describes the page with image descriptions, reads and summarizes the article.
+Noor opens BBC, auto-dismisses cookie banners, describes the homepage layout, clicks the top story, and reads the full article.
 
-### 3. Form Filling
+### 3. Form Filling (~90s)
 > "Help me sign up for GitHub."
 
-Noor opens the signup page, identifies form fields, and guides the user field-by-field with voice interaction.
+Noor opens the signup page, reads all form fields via accessibility tree, and guides the user through each field with voice interaction.
 
 ---
 
-## Key Design Decisions
+## Design Decisions
 
-- **Vision-first, not DOM-first**: Gemini analyzes screenshots instead of parsing HTML, making Noor work on any website regardless of accessibility markup.
-- **Voice-native**: Gemini Live API provides real-time bidirectional audio — no TTS/STT pipeline needed.
-- **Always narrate**: Every action is spoken aloud. The user is never left wondering what's happening.
-- **Structured agent communication**: Pydantic `output_schema` + `output_key` for typed data flow between agents — never free text.
-- **BuiltInPlanner with thinking**: The orchestrator uses Gemini's native thinking (budget: 2048 tokens) to plan multi-step actions before executing.
-- **Zero-dependency frontend**: Vanilla JS with ES modules — no build step, no bundler, no node_modules.
-- **Live screenshot streaming**: Vision tool results include base64 screenshots forwarded to the client via WebSocket UI events.
+| Decision | Rationale |
+|----------|-----------|
+| Vision-first, not DOM-first | Gemini analyzes screenshots — works on any site regardless of a11y markup |
+| Accessibility tree as primary sense | `get_accessibility_tree` is fast (<1s) and gives structured form/button data |
+| Voice-native | Gemini Live API = real-time bidi audio, no separate TTS/STT |
+| Always narrate | Every action is spoken. The user is never left in silence. |
+| Single orchestrator with all tools | Simpler than multi-agent routing; LLM picks the right tool directly |
+| Dual-model routing | Text model on `global`, Live API on `us-central1` via custom Gemini subclass |
+| Zero-dependency frontend | Vanilla JS, no build step, no bundler, no node_modules |
+| Stealth by default | Anti-detection JS + cookie auto-dismiss so sites don't block the agent |
 
 ---
 
